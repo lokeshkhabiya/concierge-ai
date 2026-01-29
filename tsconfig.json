@@ -1,0 +1,3 @@
+{
+  "extends": "@pokus/config/tsconfig.base.json"
+}
