@@ -47,3 +47,9 @@ coverage
 .cache
 tmp
 temp
+
+.agents
+.claude 
+.cursor 
+
+architectures 

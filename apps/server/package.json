@@ -10,11 +10,15 @@
     "start": "bun run dist/index.mjs"
   },
   "dependencies": {
+    "@langchain/core": "^1.1.17",
+    "@langchain/langgraph": "^1.1.2",
+    "@langchain/openai": "^1.2.3",
     "@pokus/db": "workspace:*",
     "@pokus/env": "workspace:*",
     "cors": "^2.8.5",
     "dotenv": "catalog:",
     "express": "^5.1.0",
+    "langchain": "^1.2.15",
     "zod": "catalog:"
   },
   "devDependencies": {
