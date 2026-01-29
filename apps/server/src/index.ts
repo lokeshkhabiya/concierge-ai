@@ -2,6 +2,7 @@ import { env } from "@pokus/env/server";
 import cors from "cors";
 import express from "express";
 
+const port = 8000; 
 const app = express();
 
 app.use(
@@ -17,6 +18,6 @@ app.get("/", (_req, res) => {
   res.status(200).send("OK");
 });
 
-app.listen(3000, () => {
-  console.log("Server is running on http://localhost:3000");
+app.listen(port, () => {
+  console.log(`Server is running on port: ${port}`);
 });
