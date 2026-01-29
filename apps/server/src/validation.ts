@@ -1,9 +1,18 @@
 import { z } from "zod";
 
+export const chatRequestLocationSchema = z
+  .object({
+    lat: z.number().min(-90).max(90),
+    lng: z.number().min(-180).max(180),
+    address: z.string().optional(),
+  })
+  .optional();
+
 export const chatRequestSchema = z.object({
   userId: z.string().uuid("Invalid user ID"),
   message: z.string().min(1, "Message is required").max(2000, "Message too long"),
   sessionId: z.string().uuid("Invalid session ID").optional(),
+  location: chatRequestLocationSchema,
 });
 
 export type ChatRequest = z.infer<typeof chatRequestSchema>;

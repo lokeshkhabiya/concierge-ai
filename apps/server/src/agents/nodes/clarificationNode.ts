@@ -6,6 +6,7 @@ import {
   informationExtractionPrompt,
 } from "../../llm/prompts";
 import { logger } from "../../logger";
+import { detectLocation } from "../../services/locationService";
 import type { BaseAgentState } from "../state";
 import type { AgentPhase, HumanInputRequest, IntentType } from "../../types";
 
@@ -48,7 +49,21 @@ export function createClarificationNode(taskType: IntentType) {
 
     // Extract information from user input
     const extractedInfo = await extractInformation(userInput, taskType, state.gatheredInfo);
-    const mergedInfo = { ...state.gatheredInfo, ...extractedInfo };
+    let mergedInfo = { ...state.gatheredInfo, ...extractedInfo };
+
+    // Medicine: try auto-detect location if missing (IP or browser already set in orchestrator; fallback here)
+    if (taskType === "medicine") {
+      const hasLocation =
+        mergedInfo.location != null ||
+        (state as { location?: unknown }).location != null;
+      if (!hasLocation) {
+        const detected = await detectLocation();
+        if (detected) {
+          mergedInfo = { ...mergedInfo, location: detected };
+          logger.info("Location auto-detected in clarification", logContext);
+        }
+      }
+    }
 
     // Check if we have sufficient info
     const response = await llm.invoke(

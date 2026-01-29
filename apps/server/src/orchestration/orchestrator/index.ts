@@ -2,6 +2,7 @@ import { HumanMessage } from "@langchain/core/messages";
 import { hybridClassifyIntent } from "../intentClassifier";
 import { sessionManager } from "../sessionManager";
 import { logger } from "../../logger";
+import { detectLocation } from "../../services/locationService";
 import type {
   IntentType,
   OrchestratorResponse,
@@ -9,13 +10,20 @@ import type {
 } from "../../types";
 import type { BaseAgentState } from "../../agents/state";
 
+export type ChatRequestLocation = {
+  lat: number;
+  lng: number;
+  address?: string;
+};
+
 
 class Orchestrator {
 
   async processMessage(
     userId: string,
     message: string,
-    sessionId?: string
+    sessionId?: string,
+    requestLocation?: ChatRequestLocation
   ): Promise<OrchestratorResponse> {
     const logContext = { userId, sessionId };
 
@@ -49,11 +57,13 @@ class Orchestrator {
       const graph = sessionManager.getGraph(actualSessionId, intent);
 
       const existingState = await sessionManager.restoreState(task.id);
-      const inputState = this.buildInputState(
+      const inputState = await this.buildInputState(
         actualSessionId,
         task.id,
         message,
-        existingState
+        existingState,
+        intent,
+        requestLocation
       );
 
       const result = await graph.invoke(inputState, {
@@ -105,7 +115,8 @@ class Orchestrator {
   async *processMessageStream(
     userId: string,
     message: string,
-    sessionId?: string
+    sessionId?: string,
+    requestLocation?: ChatRequestLocation
   ): AsyncGenerator<StreamChunk> {
     const logContext = { userId, sessionId };
 
@@ -133,11 +144,13 @@ class Orchestrator {
       const graph = sessionManager.getGraph(actualSessionId, intent);
 
       const existingState = await sessionManager.restoreState(task.id);
-      const inputState = this.buildInputState(
+      const inputState = await this.buildInputState(
         actualSessionId,
         task.id,
         message,
-        existingState
+        existingState,
+        intent,
+        requestLocation
       );
 
       const stream = await graph.stream(inputState, {
@@ -231,11 +244,12 @@ class Orchestrator {
       const graph = sessionManager.getGraph(session.id, taskInfo.taskType as Exclude<IntentType, "unknown">);
 
       const input = selectedOption || userInput;
-      const inputState = this.buildInputState(
+      const inputState = await this.buildInputState(
         session.id,
         taskId,
         input,
-        existingState
+        existingState,
+        taskInfo.taskType as IntentType
       );
 
       if (taskInfo.taskType === "travel" && selectedOption) {
@@ -279,7 +293,7 @@ class Orchestrator {
     }
   }
 
-  private buildInputState(
+  private async buildInputState(
     sessionId: string,
     taskId: string,
     message: string,
@@ -287,9 +301,11 @@ class Orchestrator {
       phase: string;
       gatheredInfo: Record<string, unknown>;
       executionPlan: unknown;
-    } | null
-  ): Record<string, unknown> {
-    const baseState = {
+    } | null,
+    intent?: IntentType,
+    requestLocation?: ChatRequestLocation
+  ): Promise<Record<string, unknown>> {
+    const baseState: Record<string, unknown> = {
       sessionId,
       taskId,
       messages: [new HumanMessage(message)],
@@ -301,10 +317,24 @@ class Orchestrator {
         currentPhase: existingState.phase,
         gatheredInfo: existingState.gatheredInfo,
         executionPlan: existingState.executionPlan,
-        // Reset human input flags for continuation
         requiresHumanInput: false,
         humanInputRequest: null,
       };
+    }
+
+    if (intent === "medicine") {
+      const location = await detectLocation(
+        requestLocation
+          ? {
+              lat: requestLocation.lat,
+              lng: requestLocation.lng,
+              address: requestLocation.address,
+            }
+          : undefined
+      );
+      if (location) {
+        baseState.gatheredInfo = { location };
+      }
     }
 
     return baseState;

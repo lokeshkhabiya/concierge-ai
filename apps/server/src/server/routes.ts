@@ -31,9 +31,9 @@ router.post("/chat", (req, res, next) => {
 		res.status(400).json(formatZodError(validation.error));
 		return;
 	}
-	const { userId, message, sessionId } = validation.data;
+	const { userId, message, sessionId, location } = validation.data;
 	logger.info("Chat request", { userId, sessionId, messageLength: message.length });
-	orchestrator.processMessage(userId, message, sessionId).then(res.json.bind(res)).catch(next);
+	orchestrator.processMessage(userId, message, sessionId, location).then(res.json.bind(res)).catch(next);
 });
 
 router.post("/chat/stream", (req, res, next) => {
@@ -42,7 +42,7 @@ router.post("/chat/stream", (req, res, next) => {
 		res.status(400).json(formatZodError(validation.error));
 		return;
 	}
-	const { userId, message, sessionId } = validation.data;
+	const { userId, message, sessionId, location } = validation.data;
 	res.setHeader("Content-Type", "text/event-stream");
 	res.setHeader("Cache-Control", "no-cache");
 	res.setHeader("Connection", "keep-alive");
@@ -50,7 +50,7 @@ router.post("/chat/stream", (req, res, next) => {
 	logger.info("Stream chat request", { userId, sessionId });
 	(async () => {
 		try {
-			for await (const chunk of orchestrator.processMessageStream(userId, message, sessionId)) {
+			for await (const chunk of orchestrator.processMessageStream(userId, message, sessionId, location)) {
 				res.write(`data: ${JSON.stringify(chunk)}\n\n`);
 			}
 		} catch (e) {
