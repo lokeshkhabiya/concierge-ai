@@ -47,3 +47,79 @@ export interface ExecutionStep {
   result?: unknown;
   error?: string;
 }
+
+/** Health check API response */
+export interface HealthCheckResponse {
+  status: "ok" | "degraded" | "error";
+  database: boolean;
+  timestamp: string;
+}
+
+/** Chat request payload */
+export interface ChatRequest {
+  userId?: string;
+  message: string;
+  sessionId?: string;
+  sessionToken?: string;
+  location?: {
+    lat: number;
+    lng: number;
+    address?: string;
+  };
+}
+
+/** Continue task request payload */
+export interface ContinueTaskRequest {
+  taskId: string;
+  userInput: string;
+  selectedOption?: string;
+}
+
+/** Orchestrator / chat API response */
+export interface OrchestratorResponse {
+  sessionId: string;
+  taskId?: string;
+  response: string;
+  requiresInput: boolean;
+  inputRequest?: HumanInputRequest;
+  isComplete: boolean;
+  progress?: number;
+  sessionToken?: string;
+  isNewGuestSession?: boolean;
+}
+
+/** Task details API response */
+export interface TaskDetailsResponse {
+  task: {
+    id: string;
+    type: string;
+    status: string;
+    phase: string;
+    progress: number;
+    createdAt: string;
+    completedAt: string | null;
+  };
+  steps: Array<{
+    id: string;
+    name: string;
+    status: string;
+    sequenceNumber: number;
+  }>;
+}
+
+/** Task progress summary API response */
+export interface ProgressSummaryResponse {
+  phase: string;
+  progress: number;
+  completedSteps: number;
+  totalSteps: number;
+  isComplete: boolean;
+}
+
+/** Guest login API response */
+export interface GuestLoginResponse {
+  sessionToken: string;
+  userId: string;
+  sessionId: string;
+  expiresIn: number;
+}

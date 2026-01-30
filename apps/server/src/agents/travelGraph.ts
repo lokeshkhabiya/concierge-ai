@@ -21,6 +21,7 @@ import {
 const itineraryLlm = createLlm({
   temperature: 1,
   maxTokens: 8192,
+  timeout: 120000, // 2 minute timeout
 });
 import { logger, type LogContext } from "../logger";
 import type { ItineraryDay, RichTravelPlan, QuickLogistics, BudgetSnapshot, TransportInfo, AccommodationStrategy, BookingAdvice } from "../types";
@@ -86,7 +87,7 @@ function trimResearchResultsForPrompt(
       const desc =
         typeof description === "string"
           ? description.slice(0, MAX_DESCRIPTION_CHARS) +
-            (description.length > MAX_DESCRIPTION_CHARS ? "…" : "")
+          (description.length > MAX_DESCRIPTION_CHARS ? "…" : "")
           : description;
       return {
         id,
@@ -147,28 +148,34 @@ const generateItineraryNode: TravelNodeFunction = async (state) => {
       truncated: researchJson.length > 8000,
     });
 
-    const response = await itineraryLlm.invoke(
-      await travelItineraryGenerationPrompt.formatMessages({
-        destination,
-        startDate,
-        endDate,
-        budget: state.budget
-          ? `${state.budget.min}-${state.budget.max} ${state.budget.currency}`
-          : state.gatheredInfo.budgetMax
+    // Format messages first to catch any template errors
+    const messages = await travelItineraryGenerationPrompt.formatMessages({
+      destination,
+      startDate,
+      endDate,
+      budget: state.budget
+        ? `${state.budget.min}-${state.budget.max} ${state.budget.currency}`
+        : state.gatheredInfo.budgetMax
           ? `up to ${state.gatheredInfo.budgetMax}`
           : "flexible",
-        travelStyle:
-          state.preferences.travelStyle.join(", ") ||
-          (state.gatheredInfo.travelStyle as string[])?.join(", ") ||
-          "general",
-        interests:
-          state.preferences.interests.join(", ") ||
-          (state.gatheredInfo.interests as string[])?.join(", ") ||
-          "sightseeing, local cuisine",
-        researchResults: truncatedResearch,
-        numberOfTravelers: numberOfTravelers.toString(),
-      })
-    );
+      travelStyle:
+        state.preferences.travelStyle.join(", ") ||
+        (state.gatheredInfo.travelStyle as string[])?.join(", ") ||
+        "general",
+      interests:
+        state.preferences.interests.join(", ") ||
+        (state.gatheredInfo.interests as string[])?.join(", ") ||
+        "sightseeing, local cuisine",
+      researchResults: truncatedResearch,
+      numberOfTravelers: numberOfTravelers.toString(),
+    });
+
+    logger.debug("Formatted prompt, calling LLM...", {
+      ...logContext,
+      messageCount: messages.length,
+    });
+
+    const response = await itineraryLlm.invoke(messages);
 
     const content = response.content as string;
 

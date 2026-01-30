@@ -1,9 +1,6 @@
 import { ChatOpenAI } from "@langchain/openai";
 import { config } from "../config";
 
-/**
- * Standard LLM client for non-streaming operations
- */
 export const llm = new ChatOpenAI({
   model: config.llm.model,
   temperature: config.llm.temperature,
@@ -36,11 +33,13 @@ export function createLlm(options: {
   temperature?: number;
   maxTokens?: number;
   streaming?: boolean;
+  timeout?: number;
 }): ChatOpenAI {
   return new ChatOpenAI({
     model: config.llm.model,
     temperature: options.temperature ?? config.llm.temperature,
     maxTokens: options.maxTokens ?? config.llm.maxTokens,
     streaming: options.streaming ?? false,
+    timeout: options.timeout ?? 120000, // 2 minute timeout by default
   });
 }

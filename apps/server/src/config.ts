@@ -1,30 +1,18 @@
 import { env } from "@pokus/env/server";
 
-/**
- * Application configuration
- */
 export const config = {
-  /**
-   * Server configuration
-   */
   server: {
     port: 8000,
     corsOrigin: env.CORS_ORIGIN,
   },
 
-  /**
-   * LLM configuration
-   */
   llm: {
     provider: "openai" as const,
-    model: "gpt-5-mini",
+    model: "gpt-5",
     temperature: 1,
     maxTokens: 8192,
   },
 
-  /**
-   * Agent configuration
-   */
   agents: {
     maxIterations: 10,
     timeoutMs: 120000, // 2 minutes
@@ -33,25 +21,16 @@ export const config = {
     maxRetries: 3,
   },
 
-  /**
-   * Database configuration
-   */
   database: {
     url: env.DATABASE_URL,
     connectionPoolSize: 10,
   },
 
-  /**
-   * Streaming configuration
-   */
   streaming: {
     enabled: true,
     heartbeatIntervalMs: 15000,
   },
 
-  /**
-   * Tool configuration
-   */
   tools: {
     webSearch: {
       maxResults: 10,

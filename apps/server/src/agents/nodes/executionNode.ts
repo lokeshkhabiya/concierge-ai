@@ -14,6 +14,8 @@ interface ExecutionResult {
   messages?: AIMessage[];
   error?: string;
   gatheredInfo?: Record<string, unknown>;
+  // Travel-specific: return at top level so TravelStateAnnotation reducer can accumulate
+  researchResults?: Record<string, unknown>;
 }
 
 /**
@@ -135,10 +137,14 @@ export function createExecutionNode() {
       // state like travel research results).
       const newInfo = extractInfoFromResult(state, currentStep, parsedResult);
 
+      // Return researchResults at top level for TravelStateAnnotation reducer to accumulate
+      const researchResults = newInfo.researchResults as Record<string, unknown> | undefined;
+
       return {
         executionPlan: completedPlan,
         currentStepIndex: currentStepIndex + 1,
         gatheredInfo: newInfo,
+        researchResults, // Top-level for LangGraph reducer
         messages: [
           new AIMessage(
             `Completed: ${currentStep.name}. ${summarizeResult(currentStep.toolName, parsedResult)}`

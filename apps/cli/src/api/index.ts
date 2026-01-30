@@ -1,13 +1,8 @@
-/**
- * API client for communicating with the server
- */
+
 
 import { API_BASE_URL } from "../config/constants";
 import type { ChatRequest } from "./stream";
 
-/**
- * Chat response from non-streaming endpoint
- */
 export interface ChatResponse {
   sessionId: string;
   taskId?: string;
@@ -26,9 +21,6 @@ export interface ChatResponse {
   userId?: string;
 }
 
-/**
- * Continue task response
- */
 export interface ContinueTaskResponse {
   sessionId: string;
   response: string;
@@ -43,18 +35,12 @@ export interface ContinueTaskResponse {
   progress?: number;
 }
 
-/**
- * Guest login response
- */
 export interface GuestLoginResponse {
   sessionId: string;
   userId: string;
   sessionToken: string;
 }
 
-/**
- * Format error message from API errors
- */
 export function formatErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -65,13 +51,7 @@ export function formatErrorMessage(error: unknown): string {
   return "An unexpected error occurred";
 }
 
-/**
- * API client
- */
 export const apiClient = {
-  /**
-   * Send a chat message (non-streaming)
-   */
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const response = await fetch(`${API_BASE_URL}/chat`, {
       method: "POST",
@@ -86,12 +66,9 @@ export const apiClient = {
       throw new Error(`Chat request failed: ${response.status} ${errorText}`);
     }
 
-    return response.json();
+    return (await response.json()) as ChatResponse;
   },
 
-  /**
-   * Continue a task with user input
-   */
   async continueTask(
     taskId: string,
     userInput: string,
@@ -115,12 +92,9 @@ export const apiClient = {
       );
     }
 
-    return response.json();
+    return (await response.json()) as ContinueTaskResponse;
   },
 
-  /**
-   * Create a guest session
-   */
   async guestLogin(): Promise<GuestLoginResponse> {
     const response = await fetch(`${API_BASE_URL}/auth/guest`, {
       method: "POST",
@@ -136,6 +110,6 @@ export const apiClient = {
       );
     }
 
-    return response.json();
+    return (await response.json()) as GuestLoginResponse;
   },
 };
