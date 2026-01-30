@@ -6,6 +6,10 @@
   <img src="https://img.youtube.com/vi/gUY2Ydz1Bss/maxresdefault.jpg" width="560" alt="Pokus: AI Agent System for Real-World Task Completion">
 </a>
 
+<a href="https://youtu.be/LgOCWU_k_kA" target="_blank">
+  <img src="https://img.youtube.com/vi/LgOCWU_k_kA/maxresdefault.jpg" width="560" alt="Pokus Demo Video">
+</a>
+
 ---
 
 A multi-agent system designed to take user intent and drive it to **clear completion** using agent-based reasoning, supporting medicine finding and travel planning tasks.
