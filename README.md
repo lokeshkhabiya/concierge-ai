@@ -1,9 +1,14 @@
 # Pokus - AI Agent System for Real-World Task Completion
 
+## Demo Video
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/gUY2Ydz1Bss?autoplay=1&mute=1" title="Pokus Demo" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+
+*[Watch on YouTube](https://youtu.be/gUY2Ydz1Bss) if the video above doesn’t play.*
+
+---
+
 A multi-agent system designed to take user intent and drive it to **clear completion** using agent-based reasoning, supporting medicine finding and travel planning tasks.
-
-**[Watch demo video](https://github.com/lokeshkhabiya/pokus-assignment-draft/issues/1#issue-3876367789)**
-
 ## Table of Contents
 
 - [Overview](#overview)
