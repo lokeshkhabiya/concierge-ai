@@ -210,3 +210,112 @@ export interface TravelTaskResult {
   bookings: BookingResult[];
   tips: string[];
 }
+
+// ============================================
+// Rich Travel Plan Types
+// ============================================
+
+/**
+ * Quick logistics information for a destination
+ */
+export interface QuickLogistics {
+  dates: string;
+  weather: string;
+  visaInfo: string;
+  currency: string;
+  mustHaves: string[];
+}
+
+/**
+ * Budget breakdown by category
+ */
+export interface BudgetBreakdown {
+  accommodation: number;
+  food: number;
+  activities: number;
+  transport: number;
+}
+
+/**
+ * Daily budget with total and breakdown
+ */
+export interface DailyBudget {
+  total: number;
+  breakdown: BudgetBreakdown;
+}
+
+/**
+ * Budget range for different travel styles
+ */
+export interface BudgetTier {
+  budget: number;
+  midRange: number;
+  luxury: number;
+}
+
+/**
+ * Area recommendation for accommodation
+ */
+export interface AreaRecommendation {
+  area: string;
+  nightlyBudget: BudgetTier;
+  specificPlaces: string[];
+  whyStayHere: string;
+}
+
+/**
+ * Accommodation strategy with area recommendations
+ */
+export interface AccommodationStrategy {
+  areaStrategy: string;
+  recommendations: AreaRecommendation[];
+}
+
+/**
+ * Budget snapshot for the entire trip
+ */
+export interface BudgetSnapshot {
+  perPersonPerDay: {
+    backpacker: DailyBudget;
+    midRange: DailyBudget;
+    comfortable: DailyBudget;
+  };
+  currency: string;
+  totalTripEstimate: {
+    backpacker: number;
+    midRange: number;
+    comfortable: number;
+  };
+}
+
+/**
+ * Transport and flight information
+ */
+export interface TransportInfo {
+  gettingThere: string;
+  gettingAround: string;
+  airportTransfer: string;
+}
+
+/**
+ * Booking timing advice
+ */
+export interface BookingAdvice {
+  bookNow: string[];
+  bookSoon: string[];
+  bookOnArrival: string[];
+}
+
+/**
+ * Rich travel plan with comprehensive destination information
+ */
+export interface RichTravelPlan {
+  quickLogistics: QuickLogistics;
+  accommodation: AccommodationStrategy;
+  itinerary: ItineraryDay[];
+  transportAndFlights: TransportInfo;
+  budgetSnapshot: BudgetSnapshot;
+  bookingAdvice: BookingAdvice;
+  tips: string[];
+  packingList: string[];
+}

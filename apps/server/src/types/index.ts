@@ -41,4 +41,15 @@ export type {
   TravelAgentState,
   TravelGatheredInfo,
   TravelTaskResult,
+  // Rich travel plan types
+  QuickLogistics,
+  BudgetBreakdown,
+  DailyBudget,
+  BudgetTier,
+  AreaRecommendation,
+  AccommodationStrategy,
+  BudgetSnapshot,
+  TransportInfo,
+  BookingAdvice,
+  RichTravelPlan,
 } from "./travel.types";

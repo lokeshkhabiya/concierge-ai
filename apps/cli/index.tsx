@@ -1,32 +1,12 @@
-import { useState, useEffect } from "react";
-import { render, Text, Box, useInput, useApp } from "ink";
+import { render } from "ink";
+import React from "react";
+import { App } from "./src/App";
+import { clearSession } from "./src/utils";
 
-function Counter() {
-  const [counter, setCounter] = useState(0);
-  const { exit } = useApp();
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCounter((prev) => prev + 1);
-    }, 100);
-    return () => clearInterval(timer);
-  }, []);
-
-  useInput((input, key) => {
-    if (input === "q" || key.escape) {
-      exit();
-    }
-  });
-
-  return (
-    // @ts-ignore
-    <Box flexDirection="column" padding={1}>
-      <Text color="green" bold>
-        {counter} tests passed
-      </Text>
-      <Text dimColor>Press q or Esc to exit</Text>
-    </Box>
-  );
+// In CLI dev mode, always start with a fresh session
+if (process.env.CLI_ALWAYS_NEW_SESSION === "true") {
+  clearSession();
 }
 
-render(<Counter />);
+// Render the application
+render(<App />);

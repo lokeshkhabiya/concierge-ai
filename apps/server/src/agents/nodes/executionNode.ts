@@ -86,8 +86,11 @@ export function createExecutionNode() {
         "in_progress"
       );
 
+      // Transform tool args to fix common mistakes
+      const transformedArgs = transformToolArgs(currentStep.toolName, currentStep.toolArgs);
+
       // Execute the tool
-      const result = await tool.invoke(currentStep.toolArgs);
+      const result = await tool.invoke(transformedArgs);
 
       // Parse the result
       let parsedResult: unknown;
@@ -128,8 +131,9 @@ export function createExecutionNode() {
 
       logger.info(`Step completed: ${currentStep.name}`, logContext);
 
-      // Extract relevant info to add to gathered info
-      const newInfo = extractInfoFromResult(currentStep.toolName, parsedResult);
+      // Extract relevant info to add to gathered info (and any domain-specific
+      // state like travel research results).
+      const newInfo = extractInfoFromResult(state, currentStep, parsedResult);
 
       return {
         executionPlan: completedPlan,
@@ -164,6 +168,116 @@ export function createExecutionNode() {
 }
 
 /**
+ * Transform tool arguments to fix common mistakes from planning phase
+ */
+function transformToolArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> {
+  const transformed = { ...args };
+
+  switch (toolName) {
+    case "web_search": {
+      // Fix invalid category values
+      const category = transformed.category as string | undefined;
+      if (category) {
+        const validCategories = ["pharmacy", "restaurant", "hotel", "activity", "general"];
+        if (!validCategories.includes(category)) {
+          // Map common mistakes to valid categories
+          const categoryMap: Record<string, string> = {
+            transport: "general",
+            transportation: "general",
+            accommodation: "hotel",
+            accommodations: "hotel",
+            lodging: "hotel",
+            dining: "restaurant",
+            food: "restaurant",
+            things_to_do: "activity",
+            attractions: "activity",
+            sightseeing: "activity",
+          };
+          transformed.category = categoryMap[category.toLowerCase()] || "general";
+          logger.debug(`Transformed invalid category "${category}" to "${transformed.category}"`);
+        }
+      }
+      break;
+    }
+
+    case "geocoding": {
+      // Fix common parameter name mistakes
+      if (transformed.location && !transformed.address && !transformed.coordinates) {
+        // If 'location' is provided but not 'address', use it as address
+        transformed.address = transformed.location;
+        delete transformed.location;
+        logger.debug("Transformed 'location' parameter to 'address' for geocoding");
+      }
+      if (transformed.query && !transformed.address && !transformed.coordinates) {
+        // If 'query' is provided, use it as address
+        transformed.address = transformed.query;
+        delete transformed.query;
+        logger.debug("Transformed 'query' parameter to 'address' for geocoding");
+      }
+      // Convert radius_km to radius (meters) if provided
+      if (transformed.radius_km && typeof transformed.radius_km === "number") {
+        transformed.radius = Math.round(transformed.radius_km * 1000);
+        delete transformed.radius_km;
+        logger.debug(`Transformed radius_km ${transformed.radius_km} to radius ${transformed.radius} meters`);
+      }
+      // Fix searchType if category is used instead
+      if (transformed.category && !transformed.searchType) {
+        const categoryToSearchType: Record<string, string> = {
+          pharmacy: "pharmacy",
+          restaurant: "restaurant",
+          hotel: "hotel",
+          activity: "any",
+          general: "any",
+        };
+        const mapped = categoryToSearchType[transformed.category as string];
+        if (mapped) {
+          transformed.searchType = mapped;
+          delete transformed.category;
+          logger.debug(`Transformed category "${transformed.category}" to searchType "${mapped}"`);
+        }
+      }
+      break;
+    }
+
+    case "book_activity": {
+      // Fix services array format to individual booking format
+      if (Array.isArray(transformed.services)) {
+        // If services array is provided, we can't transform it automatically
+        // Log warning and let it fail with a clear error
+        logger.warn("book_activity received 'services' array - this format is not supported. Use individual bookings with itemType, itemId, itemName.");
+        // Try to extract first service as a fallback
+        const firstService = transformed.services[0] as Record<string, unknown> | undefined;
+        if (firstService) {
+          transformed.itemType = firstService.serviceType || firstService.type;
+          transformed.itemName = firstService.name;
+          transformed.itemId = firstService.id || `item_${Date.now()}`;
+          if (firstService.date) transformed.date = firstService.date;
+          if (firstService.checkIn) transformed.checkInDate = firstService.checkIn;
+          if (firstService.checkOut) transformed.checkOutDate = firstService.checkOut;
+          if (firstService.pax || firstService.guests) {
+            transformed.guests = (firstService.pax || firstService.guests) as number;
+          }
+          delete transformed.services;
+          logger.debug("Transformed services array to individual booking format (using first service)");
+        }
+      }
+      // Fix serviceType to itemType
+      if (transformed.serviceType && !transformed.itemType) {
+        transformed.itemType = transformed.serviceType;
+        delete transformed.serviceType;
+      }
+      // Ensure required fields have defaults
+      if (!transformed.itemId && transformed.itemName) {
+        transformed.itemId = `item_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      }
+      break;
+    }
+  }
+
+  return transformed;
+}
+
+/**
  * Update the status of a step in the plan
  */
 function updateStepStatus(
@@ -185,21 +299,69 @@ function updateStepStatus(
 }
 
 /**
- * Extract relevant information from tool result
+ * Extract relevant information from tool result.
+ *
+ * For generic tasks this behaves as before (adds simple keys like
+ * searchResults, geocodingResult, bookingResult).
+ *
+ * For travel tasks, this also accumulates structured research results
+ * (activities/restaurants/hotels) into a `researchResults` object on the
+ * state so that itinerary generation can consume a compact, domain-specific
+ * view of web_search outputs.
  */
 function extractInfoFromResult(
-  toolName: string,
+  state: BaseAgentState,
+  step: ExecutionStep,
   result: unknown
 ): Record<string, unknown> {
   const resultObj = result as Record<string, unknown>;
+  const toolName = step.toolName;
 
   switch (toolName) {
     case "web_search": {
       const data = resultObj.data as Record<string, unknown>;
-      if (data?.results) {
-        return { searchResults: data.results };
+      const results = (data?.results as unknown[]) || [];
+      const category =
+        (data?.category as string | undefined) ||
+        ((step.toolArgs as Record<string, unknown>).category as
+          | string
+          | undefined);
+
+      const info: Record<string, unknown> = {};
+
+      // Always expose raw search results for generic consumers
+      if (results.length > 0) {
+        info.searchResults = results;
       }
-      return {};
+
+      // For travel tasks, group results by category into researchResults
+      // so itinerary generation can use activities/restaurants/hotels.
+      if (category && results.length > 0) {
+        const currentResearch =
+          ((state as unknown as { researchResults?: Record<string, unknown> })
+            .researchResults as Record<string, unknown> | undefined) || {};
+
+        const updatedResearch: Record<string, unknown> = {
+          ...currentResearch,
+        };
+
+        const append = (key: string) => {
+          const existing = (currentResearch[key] as unknown[]) || [];
+          updatedResearch[key] = [...existing, ...results];
+        };
+
+        if (category === "activity") {
+          append("activities");
+        } else if (category === "restaurant") {
+          append("restaurants");
+        } else if (category === "hotel") {
+          append("hotels");
+        }
+
+        info.researchResults = updatedResearch;
+      }
+
+      return info;
     }
 
     case "geocoding": {

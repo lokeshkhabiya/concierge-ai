@@ -9,9 +9,10 @@ export const chatRequestLocationSchema = z
   .optional();
 
 export const chatRequestSchema = z.object({
-  userId: z.string().uuid("Invalid user ID"),
+  userId: z.string().uuid("Invalid user ID").optional(),
   message: z.string().min(1, "Message is required").max(2000, "Message too long"),
   sessionId: z.string().uuid("Invalid session ID").optional(),
+  sessionToken: z.string().optional(),
   location: chatRequestLocationSchema,
 });
 
@@ -116,6 +117,32 @@ export const healthCheckSchema = z.object({
 });
 
 export type HealthCheck = z.infer<typeof healthCheckSchema>;
+
+// Guest authentication schemas
+export const guestLoginResponseSchema = z.object({
+  sessionToken: z.string(),
+  userId: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  expiresIn: z.number(),
+});
+
+export type GuestLoginResponse = z.infer<typeof guestLoginResponseSchema>;
+
+export const endGuestSessionRequestSchema = z.object({
+  sessionToken: z.string().min(1, "Session token is required"),
+  deleteUser: z.boolean().optional().default(false),
+});
+
+export type EndGuestSessionRequest = z.infer<typeof endGuestSessionRequestSchema>;
+
+export const sessionStatusResponseSchema = z.object({
+  valid: z.boolean(),
+  userId: z.string().uuid().optional(),
+  sessionId: z.string().uuid().optional(),
+  createdAt: z.string().datetime().optional(),
+});
+
+export type SessionStatusResponse = z.infer<typeof sessionStatusResponseSchema>;
 
 export function validateRequest<T extends z.ZodSchema>(
   schema: T,

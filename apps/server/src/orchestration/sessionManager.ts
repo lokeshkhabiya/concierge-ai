@@ -42,6 +42,15 @@ class SessionManager {
     return session;
   }
 
+  /**
+   * Get the current active task for a session, if any.
+   * Used to treat follow-up messages (e.g. location) as continuation of the task
+   * instead of re-running intent classification.
+   */
+  async getActiveTaskForSession(sessionId: string): Promise<Task | null> {
+    return taskRepository.findActiveBySession(sessionId);
+  }
+
   async getOrCreateTask(
     sessionId: string,
     intentType: Exclude<IntentType, "unknown">

@@ -51,7 +51,6 @@ export function createClarificationNode(taskType: IntentType) {
     const extractedInfo = await extractInformation(userInput, taskType, state.gatheredInfo);
     let mergedInfo = { ...state.gatheredInfo, ...extractedInfo };
 
-    // Medicine: try auto-detect location if missing (IP or browser already set in orchestrator; fallback here)
     if (taskType === "medicine") {
       const hasLocation =
         mergedInfo.location != null ||

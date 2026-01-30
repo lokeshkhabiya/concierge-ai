@@ -60,12 +60,19 @@ export const taskRepository = {
     });
   },
 
-  /**
-   * Find tasks by session
-   */
   async findBySession(sessionId: string): Promise<Task[]> {
     return prisma.task.findMany({
       where: { sessionId },
+      orderBy: { createdAt: "desc" },
+    });
+  },
+
+  async findActiveBySession(sessionId: string): Promise<Task | null> {
+    return prisma.task.findFirst({
+      where: {
+        sessionId,
+        status: { in: ["pending", "in_progress"] },
+      },
       orderBy: { createdAt: "desc" },
     });
   },

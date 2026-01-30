@@ -72,9 +72,35 @@ class Orchestrator {
 
       const response = this.extractResponse(result);
 
+      // Build persisted gatheredInfo with travel-specific state (same as continueTask)
+      // Cast to Record to access travel-specific fields safely
+      const resultAny = result as Record<string, unknown>;
+      const persistedGatheredInfo: Record<string, unknown> = {
+        ...result.gatheredInfo,
+      };
+      // Persist travel-specific state
+      if (resultAny.awaitingRefinement !== undefined) {
+        persistedGatheredInfo.awaitingRefinement = resultAny.awaitingRefinement;
+      }
+      if (resultAny.refinementFeedback !== undefined) {
+        persistedGatheredInfo.refinementFeedback = resultAny.refinementFeedback;
+      }
+      if (resultAny.itinerary) {
+        persistedGatheredInfo.itinerary = resultAny.itinerary;
+      }
+      if (resultAny.richPlan) {
+        persistedGatheredInfo.richPlan = resultAny.richPlan;
+      }
+      if (resultAny.researchResults) {
+        persistedGatheredInfo.researchResults = resultAny.researchResults;
+      }
+      if (resultAny.destination) {
+        persistedGatheredInfo.destination = resultAny.destination;
+      }
+
       await sessionManager.persistState(task.id, {
         phase: result.currentPhase,
-        gatheredInfo: result.gatheredInfo,
+        gatheredInfo: persistedGatheredInfo,
         executionPlan: result.executionPlan,
         progress: this.calculateProgress(result),
       });
@@ -126,20 +152,42 @@ class Orchestrator {
 
       yield { type: "progress", message: "Session initialized" };
 
-      const intent = await hybridClassifyIntent(message);
-      yield { type: "progress", message: `Intent: ${intent}` };
+      const existingTask = await sessionManager.getActiveTaskForSession(actualSessionId);
+      const intentFromExisting =
+        existingTask &&
+        (existingTask.taskType === "medicine" || existingTask.taskType === "travel")
+          ? (existingTask.taskType as Exclude<IntentType, "unknown">)
+          : null;
 
-      if (intent === "unknown") {
-        yield {
-          type: "complete",
-          message:
-            "I can help you find medicine nearby or plan a trip. What would you like to do?",
-        };
-        return;
+      let intent: IntentType;
+      let task: Awaited<ReturnType<typeof sessionManager.getOrCreateTask>>;
+
+      if (intentFromExisting) {
+        intent = intentFromExisting;
+        task = existingTask!;
+        logger.debug("Continuing existing task", {
+          taskId: task.id,
+          intent,
+          sessionId: actualSessionId,
+        });
+        yield { type: "progress", message: `Intent: ${intent} (existing task)`, data: { taskId: task.id } };
+      } else {
+        const classified = await hybridClassifyIntent(message);
+        yield { type: "progress", message: `Intent: ${classified}` };
+
+        if (classified === "unknown") {
+          yield {
+            type: "complete",
+            message:
+              "I can help you find medicine nearby or plan a trip. What would you like to do?",
+          };
+          return;
+        }
+
+        intent = classified;
+        task = await sessionManager.getOrCreateTask(actualSessionId, intent);
+        yield { type: "progress", message: "Task created", data: { taskId: task.id } };
       }
-
-      const task = await sessionManager.getOrCreateTask(actualSessionId, intent);
-      yield { type: "progress", message: "Task created", data: { taskId: task.id } };
 
       const graph = sessionManager.getGraph(actualSessionId, intent);
 
@@ -252,18 +300,71 @@ class Orchestrator {
         taskInfo.taskType as IntentType
       );
 
-      if (taskInfo.taskType === "travel" && selectedOption) {
-        (inputState as Record<string, unknown>).refinementFeedback = selectedOption;
-        (inputState as Record<string, unknown>).awaitingRefinement = false;
+      // Handle travel task refinement feedback
+      if (taskInfo.taskType === "travel") {
+        // Check if we're resuming from awaiting refinement
+        const isAwaitingRefinement =
+          existingState.gatheredInfo?.awaitingRefinement === true ||
+          (inputState as Record<string, unknown>).awaitingRefinement === true;
+
+        // Use selectedOption or userInput as feedback
+        const feedback = selectedOption || userInput;
+
+        logger.debug("Travel task continuation check", {
+          taskId,
+          isAwaitingRefinement,
+          feedback,
+          existingStateAwaitingRefinement: existingState.gatheredInfo?.awaitingRefinement,
+          inputStateAwaitingRefinement: (inputState as Record<string, unknown>).awaitingRefinement,
+          existingPhase: existingState.phase,
+        });
+
+        if (isAwaitingRefinement && feedback) {
+          logger.info("Setting refinement feedback and skipToConfirmation flag", { taskId, feedback });
+          (inputState as Record<string, unknown>).refinementFeedback = feedback;
+          (inputState as Record<string, unknown>).awaitingRefinement = false;
+          // Set flag to skip directly to confirmItinerary
+          (inputState as Record<string, unknown>).skipToConfirmation = true;
+        }
       }
 
       const result = await graph.invoke(inputState, {
         configurable: { thread_id: taskId },
       });
 
+      // Cast to Record to access travel-specific fields safely
+      const resultAny = result as Record<string, unknown>;
+      const persistedGatheredInfo: Record<string, unknown> = {
+        ...result.gatheredInfo,
+        // Persist travel-specific state
+        awaitingRefinement: resultAny.awaitingRefinement || false,
+        refinementFeedback: resultAny.refinementFeedback || null,
+      };
+      // Persist itinerary, rich plan, and research results for travel tasks
+      if (resultAny.itinerary) {
+        persistedGatheredInfo.itinerary = resultAny.itinerary;
+      }
+      if (resultAny.richPlan) {
+        persistedGatheredInfo.richPlan = resultAny.richPlan;
+      }
+      if (resultAny.researchResults) {
+        persistedGatheredInfo.researchResults = resultAny.researchResults;
+      }
+      if (resultAny.destination) {
+        persistedGatheredInfo.destination = resultAny.destination;
+      }
+
+      logger.debug("Persisting state with gatheredInfo", {
+        taskId,
+        phase: result.currentPhase,
+        awaitingRefinement: resultAny.awaitingRefinement,
+        persistedAwaitingRefinement: persistedGatheredInfo.awaitingRefinement,
+        requiresHumanInput: result.requiresHumanInput,
+      });
+
       await sessionManager.persistState(taskId, {
         phase: result.currentPhase,
-        gatheredInfo: result.gatheredInfo,
+        gatheredInfo: persistedGatheredInfo,
         executionPlan: result.executionPlan,
         progress: this.calculateProgress(result),
       });
@@ -312,7 +413,7 @@ class Orchestrator {
     };
 
     if (existingState) {
-      return {
+      const restoredState: Record<string, unknown> = {
         ...baseState,
         currentPhase: existingState.phase,
         gatheredInfo: existingState.gatheredInfo,
@@ -320,6 +421,27 @@ class Orchestrator {
         requiresHumanInput: false,
         humanInputRequest: null,
       };
+
+      // Restore travel-specific state from gatheredInfo to top level
+      if (existingState.gatheredInfo) {
+        if (existingState.gatheredInfo.awaitingRefinement !== undefined) {
+          restoredState.awaitingRefinement = existingState.gatheredInfo.awaitingRefinement;
+        }
+        if (existingState.gatheredInfo.itinerary !== undefined) {
+          restoredState.itinerary = existingState.gatheredInfo.itinerary;
+        }
+        if (existingState.gatheredInfo.richPlan !== undefined) {
+          restoredState.richPlan = existingState.gatheredInfo.richPlan;
+        }
+        if (existingState.gatheredInfo.researchResults !== undefined) {
+          restoredState.researchResults = existingState.gatheredInfo.researchResults;
+        }
+        if (existingState.gatheredInfo.destination !== undefined) {
+          restoredState.destination = existingState.gatheredInfo.destination;
+        }
+      }
+
+      return restoredState;
     }
 
     if (intent === "medicine") {

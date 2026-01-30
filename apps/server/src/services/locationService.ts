@@ -1,54 +1,78 @@
 import type { Location } from "../types";
 import { logger } from "../logger";
+import { env } from "@pokus/env/server";
 
-const IP_API_BASE = "http://ip-api.com/json";
+const MAPBOX_GEOCODE_BASE = "https://api.mapbox.com/search/geocode/v6";
 
-interface IpApiResponse {
-  status: "success" | "fail";
-  message?: string;
-  city?: string;
-  regionName?: string;
-  country?: string;
-  lat?: number;
-  lon?: number;
-  zip?: string;
-}
-
-function formatLocationFromAPI(data: IpApiResponse): Location | null {
-  if (data.status !== "success" || data.lat == null || data.lon == null) {
+/**
+ * Reverse geocode coordinates to get full address details using Mapbox
+ */
+async function reverseGeocodeCoordinates(lat: number, lng: number): Promise<Location | null> {
+  const token = env.MAPBOX_ACCESS_TOKEN;
+  if (!token) {
+    logger.warn("Mapbox token not available for reverse geocoding");
     return null;
   }
-  const city = data.city ?? "";
-  const regionName = data.regionName ?? "";
-  const country = data.country ?? "";
-  const address = [city, regionName, country].filter(Boolean).join(", ") || "Unknown";
-  return {
-    lat: data.lat,
-    lng: data.lon,
-    address,
-    city: city || undefined,
-    state: regionName || undefined,
-    country: country || undefined,
-  };
-}
 
-export async function detectLocationFromIP(): Promise<Location | null> {
   try {
-    const res = await fetch(`${IP_API_BASE}/?fields=status,message,city,regionName,country,lat,lon,zip`, {
+    const params = new URLSearchParams({
+      longitude: String(lng),
+      latitude: String(lat),
+      access_token: token,
+      limit: "1",
+    });
+    const url = `${MAPBOX_GEOCODE_BASE}/reverse?${params.toString()}`;
+    const res = await fetch(url, {
       signal: AbortSignal.timeout(5000),
     });
+
     if (!res.ok) {
-      logger.warn("Location from IP failed", { status: res.status });
+      logger.warn("Reverse geocoding failed", { status: res.status });
       return null;
     }
-    const data = (await res.json()) as IpApiResponse;
-    const location = formatLocationFromAPI(data);
-    if (location) {
-      logger.info("Location detected from IP", { city: location.city, country: location.country });
+
+    const data = (await res.json()) as {
+      features?: Array<{
+        geometry?: { coordinates?: [number, number] };
+        properties?: {
+          name?: string;
+          place_formatted?: string;
+          context?: {
+            place?: { name?: string };
+            region?: { name?: string };
+            country?: { name?: string };
+            postcode?: { name?: string };
+          };
+        };
+      }>;
+    };
+
+    const feature = data.features?.[0];
+    if (!feature?.geometry?.coordinates) {
+      return null;
     }
-    return location;
+
+    const [lon, latRes] = feature.geometry.coordinates;
+    const props = feature.properties ?? {};
+    const ctx = props.context ?? {};
+    const place = ctx.place?.name ?? "";
+    const region = ctx.region?.name ?? "";
+    const country = ctx.country?.name ?? "";
+    const name = props.name ?? "";
+    const placeFormatted = props.place_formatted ?? "";
+
+    const formattedAddress = name ? `${name}, ${placeFormatted}` : placeFormatted || `${lat}, ${lng}`;
+
+    return {
+      lat: latRes,
+      lng: lon,
+      address: formattedAddress,
+      city: place || undefined,
+      state: region || undefined,
+      country: country || undefined,
+    };
   } catch (err) {
-    logger.warn("Location from IP failed", { error: (err as Error).message });
+    logger.warn("Reverse geocoding failed", { error: (err as Error).message });
     return null;
   }
 }
@@ -72,11 +96,33 @@ export async function detectLocation(params?: {
   address?: string;
 }): Promise<Location | null> {
   if (params?.lat != null && params?.lng != null) {
+    // If address is already provided, use it directly
+    if (params.address) {
+      return locationFromBrowser({
+        lat: params.lat,
+        lng: params.lng,
+        address: params.address,
+      });
+    }
+    
+    // Otherwise, reverse geocode to get exact address from coordinates
+    const reverseGeocoded = await reverseGeocodeCoordinates(params.lat, params.lng);
+    if (reverseGeocoded) {
+      logger.info("Location reverse geocoded from coordinates", {
+        lat: reverseGeocoded.lat,
+        lng: reverseGeocoded.lng,
+        address: reverseGeocoded.address,
+      });
+      return reverseGeocoded;
+    }
+    
+    // Fallback to basic location if reverse geocoding fails
     return locationFromBrowser({
       lat: params.lat,
       lng: params.lng,
-      address: params.address,
     });
   }
-  return detectLocationFromIP();
+  
+  // No coordinates provided - return null (IP-based detection removed)
+  return null;
 }

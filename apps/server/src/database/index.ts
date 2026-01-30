@@ -40,4 +40,5 @@ export {
   taskStepRepository,
   messageRepository,
   conversationRepository,
+  userRepository,
 } from "./repositories";

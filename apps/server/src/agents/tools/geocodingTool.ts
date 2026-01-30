@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { BaseTool } from "./baseTool";
 import { env } from "@pokus/env/server";
+import { logger } from "../../logger";
 
 const MAPBOX_GEOCODE_BASE = "https://api.mapbox.com/search/geocode/v6";
 const MAPBOX_SEARCH_BOX_BASE = "https://api.mapbox.com/search/searchbox/v1";
@@ -251,59 +252,310 @@ export class GeocodingTool extends BaseTool<typeof geocodingSchema> {
   }
 
   /**
-   * Find nearby POIs using Mapbox Search Box API category endpoint
+   * Calculate distance between two coordinates using Haversine formula
+   */
+  private calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+    const R = 6371000; // Earth's radius in meters
+    const dLat = this.toRadians(lat2 - lat1);
+    const dLon = this.toRadians(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(this.toRadians(lat1)) *
+        Math.cos(this.toRadians(lat2)) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  private toRadians(degrees: number): number {
+    return degrees * (Math.PI / 180);
+  }
+
+  /**
+   * Find nearby POIs using Mapbox Search Box API
+   * First tries category endpoint, falls back to text search if needed
+   * Filters results by radius to only return places within the specified distance
    */
   private async findNearbyPlaces(
     lat: number,
     lng: number,
-    _radius: number,
+    radius: number,
     type: string
   ): Promise<NearbyPlace[]> {
+    // Try category search first
     const category = SEARCH_TYPE_TO_CATEGORY[type] ?? "food_and_drink";
+    const categoryResults = await this.searchByCategory(lat, lng, radius, category, type);
+    
+    // If category search returned results, use them
+    if (categoryResults.length > 0) {
+      return categoryResults;
+    }
+    
+    // Fallback to text-based search
+    logger.debug("Category search returned no results, trying text search", { type, category });
+    const searchQueries: Record<string, string> = {
+      pharmacy: "pharmacy",
+      restaurant: "restaurant",
+      hotel: "hotel",
+      any: "store",
+    };
+    const query = searchQueries[type] ?? type;
+    return this.searchByText(lat, lng, radius, query, type);
+  }
+
+  /**
+   * Search using Mapbox Search Box API category endpoint
+   */
+  private async searchByCategory(
+    lat: number,
+    lng: number,
+    radius: number,
+    category: string,
+    type: string
+  ): Promise<NearbyPlace[]> {
     const params = new URLSearchParams({
       access_token: this.token,
       proximity: `${lng},${lat}`,
-      limit: "10",
+      limit: "25", // Maximum allowed by Mapbox Search Box API category endpoint
       language: "en",
     });
     const url = `${MAPBOX_SEARCH_BOX_BASE}/category/${category}?${params.toString()}`;
-    const res = await fetch(url);
+    
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(10000),
+      });
 
-    if (!res.ok) {
-      // Log but don't fail the whole tool; return empty nearby
+      if (!res.ok) {
+        const errorText = await res.text();
+        logger.warn("Mapbox category search failed", {
+          status: res.status,
+          statusText: res.statusText,
+          category,
+          url: url.replace(this.token, "***"),
+          error: errorText.substring(0, 200),
+        });
+        return [];
+      }
+
+      const data = (await res.json()) as {
+        features?: Array<{
+          geometry?: { coordinates?: [number, number] };
+          properties?: {
+            name?: string;
+            address?: string;
+            full_address?: string;
+            place_formatted?: string;
+            distance?: number;
+            coordinates?: {
+              longitude?: number;
+              latitude?: number;
+            };
+          };
+        }>;
+      };
+
+      const features = data.features ?? [];
+      logger.debug("Mapbox category search results", {
+        category,
+        totalFeatures: features.length,
+        lat,
+        lng,
+        radius,
+      });
+
+      const nearbyPlaces: NearbyPlace[] = [];
+      let placeIndex = 1;
+
+      for (const f of features) {
+        // Search Box API returns coordinates in geometry.coordinates OR properties.coordinates
+        let featureLat: number;
+        let featureLon: number;
+        
+        if (f.geometry?.coordinates) {
+          // Standard GeoJSON format: [longitude, latitude]
+          [featureLon, featureLat] = f.geometry.coordinates;
+        } else if (f.properties?.coordinates?.latitude && f.properties?.coordinates?.longitude) {
+          // Search Box API also provides coordinates in properties
+          featureLat = f.properties.coordinates.latitude;
+          featureLon = f.properties.coordinates.longitude;
+        } else {
+          continue; // Skip if no coordinates
+        }
+        
+        // Calculate exact distance using Haversine formula
+        const distance = this.calculateDistance(lat, lng, featureLat, featureLon);
+        
+        // Only include places within the specified radius
+        if (distance <= radius) {
+          const props = f.properties ?? {};
+          const name = props.name ?? "Unknown";
+          const address = props.full_address ?? props.address ?? props.place_formatted ?? "";
+
+          nearbyPlaces.push({
+            id: `${type}_${placeIndex}`,
+            name,
+            type,
+            address,
+            lat: featureLat,
+            lng: featureLon,
+            distance: Math.round(distance),
+          });
+          placeIndex++;
+
+          // Stop once we have enough results (limit to 10 for consistency)
+          if (nearbyPlaces.length >= 10) {
+            break;
+          }
+        }
+      }
+
+      logger.debug("Filtered nearby places by radius", {
+        category,
+        totalFound: nearbyPlaces.length,
+        radius,
+      });
+
+      // Sort by distance (closest first)
+      return nearbyPlaces.sort((a, b) => a.distance - b.distance);
+    } catch (err) {
+      logger.warn("Mapbox category search error", {
+        error: (err as Error).message,
+        category,
+        lat,
+        lng,
+      });
       return [];
     }
+  }
 
-    const data = (await res.json()) as {
-      features?: Array<{
-        geometry?: { coordinates?: [number, number] };
-        properties?: {
-          name?: string;
-          address?: string;
-          full_address?: string;
-          place_formatted?: string;
-          distance?: number;
-        };
-      }>;
-    };
-
-    const features = data.features ?? [];
-    return features.map((f, i) => {
-      const [lon, featureLat] = f.geometry?.coordinates ?? [lng, lat];
-      const props = f.properties ?? {};
-      const name = props.name ?? "Unknown";
-      const address = props.full_address ?? props.address ?? props.place_formatted ?? "";
-      const dist = props.distance ?? 0;
-
-      return {
-        id: `${type}_${i + 1}`,
-        name,
-        type,
-        address,
-        lat: featureLat,
-        lng: lon,
-        distance: Math.round(dist),
-      };
+  private async searchByText(
+    lat: number,
+    lng: number,
+    radius: number,
+    query: string,
+    type: string
+  ): Promise<NearbyPlace[]> {
+    // Use Search Box API forward endpoint with proximity to search for POIs
+    const params = new URLSearchParams({
+      access_token: this.token,
+      q: query,
+      proximity: `${lng},${lat}`,
+      limit: "10", // Maximum allowed by Search Box API forward endpoint
+      language: "en",
+      types: "poi", // Points of interest - valid for Search Box API
     });
+    const url = `${MAPBOX_SEARCH_BOX_BASE}/forward?${params.toString()}`;
+    
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        logger.warn("Mapbox text search failed", {
+          status: res.status,
+          statusText: res.statusText,
+          query,
+          error: errorText.substring(0, 200),
+        });
+        return [];
+      }
+
+      const data = (await res.json()) as {
+        features?: Array<{
+          geometry?: { coordinates?: [number, number] };
+          properties?: {
+            name?: string;
+            address?: string;
+            full_address?: string;
+            place_formatted?: string;
+            coordinates?: {
+              longitude?: number;
+              latitude?: number;
+            };
+            context?: {
+              place?: { name?: string };
+              region?: { name?: string };
+              country?: { name?: string };
+            };
+          };
+        }>;
+      };
+
+      const features = data.features ?? [];
+      logger.debug("Mapbox text search results", {
+        query,
+        totalFeatures: features.length,
+        lat,
+        lng,
+        radius,
+      });
+
+      const nearbyPlaces: NearbyPlace[] = [];
+      let placeIndex = 1;
+
+      for (const feature of features) {
+        // Search Box API returns coordinates in geometry.coordinates OR properties.coordinates
+        let featureLat: number;
+        let featureLon: number;
+        
+        if (feature.geometry?.coordinates) {
+          // Standard GeoJSON format: [longitude, latitude]
+          [featureLon, featureLat] = feature.geometry.coordinates;
+        } else if (feature.properties?.coordinates?.latitude && feature.properties?.coordinates?.longitude) {
+          // Search Box API also provides coordinates in properties
+          featureLat = feature.properties.coordinates.latitude;
+          featureLon = feature.properties.coordinates.longitude;
+        } else {
+          continue; // Skip if no coordinates
+        }
+        
+        // Calculate exact distance using Haversine formula
+        const distance = this.calculateDistance(lat, lng, featureLat, featureLon);
+        
+        // Only include places within the specified radius
+        if (distance <= radius) {
+          const props = feature.properties ?? {};
+          const name = props.name ?? "Unknown";
+          const address = props.full_address ?? props.address ?? props.place_formatted ?? "";
+
+          nearbyPlaces.push({
+            id: `${type}_${placeIndex}`,
+            name,
+            type,
+            address,
+            lat: featureLat,
+            lng: featureLon,
+            distance: Math.round(distance),
+          });
+          placeIndex++;
+
+          // Stop once we have enough results
+          if (nearbyPlaces.length >= 10) {
+            break;
+          }
+        }
+      }
+
+      logger.debug("Filtered nearby places by radius (text search)", {
+        query,
+        totalFound: nearbyPlaces.length,
+        radius,
+      });
+
+      // Sort by distance (closest first)
+      return nearbyPlaces.sort((a, b) => a.distance - b.distance);
+    } catch (err) {
+      logger.warn("Mapbox text search error", {
+        error: (err as Error).message,
+        query,
+        lat,
+        lng,
+      });
+      return [];
+    }
   }
 }

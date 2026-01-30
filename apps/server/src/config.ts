@@ -19,7 +19,7 @@ export const config = {
     provider: "openai" as const,
     model: "gpt-5-mini",
     temperature: 1,
-    maxTokens: 4096,
+    maxTokens: 8192,
   },
 
   /**

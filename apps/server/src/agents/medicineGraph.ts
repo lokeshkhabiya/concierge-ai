@@ -115,6 +115,11 @@ const searchPharmaciesNode: MedicineNodeFunction = async (state) => {
       : (location as { address?: string })?.address ||
         (state.gatheredInfo.userAddress as string);
 
+  // Check if location has coordinates (Location object with lat/lng)
+  const locationObj = typeof location === "object" && location !== null && "lat" in location && "lng" in location
+    ? (location as { lat: number; lng: number })
+    : null;
+
   let pharmacies: PharmacyResult[] = [];
   let gatheredInfo: {
     pharmaciesFound: number;
@@ -123,11 +128,20 @@ const searchPharmaciesNode: MedicineNodeFunction = async (state) => {
   } = { pharmaciesFound: 0 };
 
   try {
-    const result = await geocodingTool.invoke({
-      address,
-      radius: state.searchRadius,
-      searchType: "pharmacy",
-    });
+    // Use coordinates if available for more accurate nearby search, otherwise use address
+    const geocodingInput = locationObj
+      ? {
+          coordinates: { lat: locationObj.lat, lng: locationObj.lng },
+          radius: state.searchRadius,
+          searchType: "pharmacy" as const,
+        }
+      : {
+          address,
+          radius: state.searchRadius,
+          searchType: "pharmacy" as const,
+        };
+
+    const result = await geocodingTool.invoke(geocodingInput);
 
     const parsed = JSON.parse(result);
     const data = parsed.data || parsed;

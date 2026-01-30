@@ -7,9 +7,10 @@ import { logger } from "../../logger";
 import type { BaseAgentState } from "../state";
 import type { AgentPhase, IntentType } from "../../types";
 
-/**
- * Result from validation node
- */
+// Rough character limit for validation payload sent to the LLM.
+// Helps avoid hitting upstream model token limits with very large plans.
+const MAX_VALIDATION_JSON_CHARS = 200_000;
+
 interface ValidationResult {
   currentPhase?: AgentPhase;
   finalResponse?: string;
@@ -44,12 +45,53 @@ export function createValidationNode(taskType: Exclude<IntentType, "unknown">) {
       // Check execution results
       const { executionPlan, gatheredInfo } = state;
 
-      // Validate the results
+      // Build payload depending on task type:
+      // - medicine: validate executionPlan + gatheredInfo
+      // - travel: validate the generated itinerary + gatheredInfo
+      const isTravel = taskType === "travel";
+      const primaryPayload = isTravel
+        ? JSON.stringify(
+            (state as unknown as { itinerary?: unknown }).itinerary ?? [],
+            null,
+            2
+          )
+        : JSON.stringify(executionPlan, null, 2);
+      const gatheredJson = JSON.stringify(gatheredInfo, null, 2);
+      const totalChars = primaryPayload.length + gatheredJson.length;
+
+      // If the payload is too large, skip explicit validation and go straight
+      // to generating the final response to avoid upstream token-limit errors.
+      if (totalChars > MAX_VALIDATION_JSON_CHARS) {
+        logger.warn("Skipping LLM validation – payload too large", {
+          ...logContext,
+          totalChars,
+          maxChars: MAX_VALIDATION_JSON_CHARS,
+        });
+
+        const finalResponse = await generateFinalResponse(taskType, state, "");
+
+        return {
+          currentPhase: "complete",
+          finalResponse,
+          messages: [new AIMessage(finalResponse)],
+          requiresHumanInput: false,
+          humanInputRequest: null,
+        };
+      }
+
+      // Validate the results via LLM
       const validationResponse = await llm.invoke(
-        await validationPrompt.formatMessages({
-          executionPlan: JSON.stringify(executionPlan, null, 2),
-          gatheredInfo: JSON.stringify(gatheredInfo, null, 2),
-        })
+        await validationPrompt.formatMessages(
+          isTravel
+            ? {
+                itinerary: primaryPayload,
+                gatheredInfo: gatheredJson,
+              }
+            : {
+                executionPlan: primaryPayload,
+                gatheredInfo: gatheredJson,
+              }
+        )
       );
 
       const validationContent = validationResponse.content as string;

@@ -83,6 +83,9 @@ export interface BaseAgentState {
   // Human-in-the-loop state
   requiresHumanInput: boolean;
   humanInputRequest: HumanInputRequest | null;
+
+  // Final response to user
+  finalResponse?: string;
 }
 
 /**
@@ -96,16 +99,24 @@ export interface OrchestratorResponse {
   inputRequest?: HumanInputRequest;
   isComplete: boolean;
   progress?: number;
+  // Guest session fields
+  sessionToken?: string;
+  isNewGuestSession?: boolean;
 }
 
 /**
  * Stream chunk for SSE streaming
  */
 export interface StreamChunk {
-  type: "progress" | "message" | "error" | "complete";
+  type: "progress" | "message" | "error" | "complete" | "session";
   node?: string;
   data?: unknown;
   message?: string;
+  // For session type (guest auth)
+  sessionToken?: string;
+  userId?: string;
+  sessionId?: string;
+  isNewGuestSession?: boolean;
 }
 
 /**

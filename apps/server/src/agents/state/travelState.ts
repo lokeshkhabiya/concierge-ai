@@ -5,6 +5,7 @@ import type {
   TravelPreferences,
   ItineraryDay,
   BookingResult,
+  RichTravelPlan,
 } from "../../types";
 
 /**
@@ -74,6 +75,12 @@ export const TravelStateAnnotation = Annotation.Root({
     default: () => null,
   }),
 
+  // Rich travel plan with comprehensive info
+  richPlan: Annotation<RichTravelPlan | null>({
+    reducer: (_, next) => next,
+    default: () => null,
+  }),
+
   // Bookings made (accumulates)
   bookings: Annotation<BookingResult[]>({
     reducer: (prev, next) => {
@@ -98,6 +105,12 @@ export const TravelStateAnnotation = Annotation.Root({
   refinementFeedback: Annotation<string | null>({
     reducer: (_, next) => next,
     default: () => null,
+  }),
+
+  // Flag to skip directly to confirmation node when resuming
+  skipToConfirmation: Annotation<boolean>({
+    reducer: (_, next) => next,
+    default: () => false,
   }),
 
   // Research results from web search
@@ -149,9 +162,11 @@ export function createInitialTravelState(
     },
     numberOfTravelers: 1,
     itinerary: null,
+    richPlan: null,
     bookings: [],
     awaitingRefinement: false,
     refinementFeedback: null,
+    skipToConfirmation: false,
     researchResults: {},
   };
 }

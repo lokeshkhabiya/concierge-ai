@@ -11,11 +11,19 @@ import {
   executionNode,
   travelValidationNode,
 } from "./nodes";
-import { llm } from "../llm";
-import { travelItineraryGenerationPrompt } from "../llm/templates/travelPlanningPrompt";
-import { toolRegistry } from "./tools";
-import { logger } from "../logger";
-import type { ItineraryDay } from "../types";
+import { createLlm } from "../llm";
+import {
+  travelItineraryGenerationPrompt,
+  travelRefinementPrompt,
+} from "../llm/templates/travelPlanningPrompt";
+
+// Use a higher max tokens for itinerary generation since the response can be large
+const itineraryLlm = createLlm({
+  temperature: 1,
+  maxTokens: 8192,
+});
+import { logger, type LogContext } from "../logger";
+import type { ItineraryDay, RichTravelPlan, QuickLogistics, BudgetSnapshot, TransportInfo, AccommodationStrategy, BookingAdvice } from "../types";
 
 /**
  * Node function type for travel state
@@ -25,80 +33,34 @@ type TravelNodeFunction = (
 ) => Promise<Partial<TravelAgentState>>;
 
 /**
- * Research destination node - searches for destination info
+ * Wrapper for travel clarification node that handles skip-to-confirmation case
+ * When resuming from confirmation (user responding yes/no), we skip clarification
  */
-const researchDestinationNode: TravelNodeFunction = async (state) => {
+const travelClarificationWrapper: TravelNodeFunction = async (state) => {
   const logContext = {
     sessionId: state.sessionId,
     taskId: state.taskId,
     agentType: "travel" as const,
   };
 
-  logger.agentStep("researchDestination", "execution", logContext);
-
-  const searchTool = toolRegistry.getTool("web_search");
-  if (!searchTool) {
-    return { error: "Web search tool not found" };
-  }
-
-  const destination =
-    state.destination || (state.gatheredInfo.destination as string);
-
-  try {
-    // Search for activities
-    const activitiesResult = await searchTool.invoke({
-      query: `things to do in ${destination}`,
-      category: "activity",
-      maxResults: 10,
-    });
-
-    // Search for restaurants
-    const restaurantsResult = await searchTool.invoke({
-      query: `best restaurants in ${destination}`,
-      category: "restaurant",
-      maxResults: 5,
-    });
-
-    // Search for hotels
-    const hotelsResult = await searchTool.invoke({
-      query: `hotels in ${destination}`,
-      category: "hotel",
-      maxResults: 5,
-    });
-
-    const parseResult = (result: string) => {
-      try {
-        const parsed = JSON.parse(result);
-        return (parsed.data?.results || []);
-      } catch {
-        return [];
-      }
-    };
-
-    const researchResults = {
-      activities: parseResult(activitiesResult),
-      restaurants: parseResult(restaurantsResult),
-      hotels: parseResult(hotelsResult),
-    };
-
-    logger.info(
-      `Research complete: ${researchResults.activities.length} activities, ${researchResults.restaurants.length} restaurants, ${researchResults.hotels.length} hotels`,
-      logContext
-    );
-
+  // Check if we should skip to confirmation (resuming from confirmation request)
+  if (state.skipToConfirmation && state.refinementFeedback) {
+    logger.info("Skipping clarification - resuming to confirmItinerary", logContext);
     return {
-      researchResults,
-      gatheredInfo: {
-        activitiesFound: researchResults.activities.length,
-        restaurantsFound: researchResults.restaurants.length,
-        hotelsFound: researchResults.hotels.length,
-      },
+      // Keep the state as-is, routing will handle sending to confirmItinerary
+      skipToConfirmation: true,
+      hasSufficientInfo: true, // Mark as sufficient so we don't loop back
     };
-  } catch (error) {
-    logger.error("Research destination failed", error as Error, logContext);
-    return { error: (error as Error).message };
   }
+
+  // Otherwise, run normal clarification
+  return travelClarificationNode(state);
 };
+
+// NOTE: Previously we had a dedicated researchDestinationNode that called
+// web_search tools directly. The travel flow now relies on the generic
+// planning + execution nodes to run tool-backed research steps and
+// aggregates their results into TravelState.researchResults.
 
 /** Max chars per description to keep prompt under token limit (avoids full-page markdown) */
 const MAX_DESCRIPTION_CHARS = 500;
@@ -142,7 +104,7 @@ function trimResearchResultsForPrompt(
 }
 
 /**
- * Generate itinerary node - creates a day-by-day plan
+ * Generate itinerary node - creates a comprehensive day-by-day plan
  */
 const generateItineraryNode: TravelNodeFunction = async (state) => {
   const logContext = {
@@ -164,12 +126,28 @@ const generateItineraryNode: TravelNodeFunction = async (state) => {
       state.endDate?.toString() ||
       (state.gatheredInfo.endDate as string) ||
       new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const numberOfTravelers = state.numberOfTravelers || 1;
 
     const trimmedResearch = trimResearchResultsForPrompt(
       state.researchResults ?? {}
     );
 
-    const response = await llm.invoke(
+    // Limit research results to avoid exceeding context window
+    const researchJson = JSON.stringify(trimmedResearch, null, 2);
+    const truncatedResearch = researchJson.length > 8000
+      ? researchJson.slice(0, 8000) + "...(truncated)"
+      : researchJson;
+
+    logger.debug("Invoking LLM for itinerary generation", {
+      ...logContext,
+      destination,
+      startDate,
+      endDate,
+      researchResultsLength: researchJson.length,
+      truncated: researchJson.length > 8000,
+    });
+
+    const response = await itineraryLlm.invoke(
       await travelItineraryGenerationPrompt.formatMessages({
         destination,
         startDate,
@@ -187,19 +165,34 @@ const generateItineraryNode: TravelNodeFunction = async (state) => {
           state.preferences.interests.join(", ") ||
           (state.gatheredInfo.interests as string[])?.join(", ") ||
           "sightseeing, local cuisine",
-        researchResults: JSON.stringify(trimmedResearch, null, 2),
+        researchResults: truncatedResearch,
+        numberOfTravelers: numberOfTravelers.toString(),
       })
     );
 
     const content = response.content as string;
 
-    const tripDays = getTripDuration(state) || 2;
-    const itinerary = parseItinerary(content, startDate, tripDays, logContext);
+    // Log response info for debugging
+    logger.debug("LLM response received", {
+      ...logContext,
+      contentLength: content?.length || 0,
+      contentPreview: content?.slice(0, 200) || "(empty)",
+    });
 
-    logger.info(`Generated ${itinerary.length}-day itinerary`, logContext);
+    const tripDays = getTripDuration(state) || 2;
+    const { itinerary, richPlan } = parseRichTravelPlan(
+      content,
+      startDate,
+      tripDays,
+      destination,
+      logContext
+    );
+
+    logger.info(`Generated ${itinerary.length}-day itinerary${richPlan ? ' with rich plan' : ''}`, logContext);
 
     return {
       itinerary,
+      richPlan,
       gatheredInfo: {
         itineraryDays: itinerary.length,
         totalEstimatedCost: itinerary.reduce(
@@ -215,22 +208,145 @@ const generateItineraryNode: TravelNodeFunction = async (state) => {
 };
 
 /**
- * Parse itinerary from LLM response
+ * Attempt to repair truncated JSON by closing unclosed brackets/braces.
+ * Tracks string boundaries so braces inside strings are not counted.
  */
-function parseItinerary(
+function repairTruncatedJson(raw: string): string {
+  const stack: string[] = [];
+  let inString = false;
+  let escape = false;
+  let quote: string | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (c === "\\" && inString) {
+      escape = true;
+      continue;
+    }
+    if (!inString) {
+      if (c === '"' || c === "'") {
+        inString = true;
+        quote = c;
+        continue;
+      }
+      if (c === "{") stack.push("}");
+      else if (c === "[") stack.push("]");
+      else if (c === "}" || c === "]") stack.pop();
+      continue;
+    }
+    if (c === quote) inString = false;
+  }
+  let out = raw.trimEnd();
+  const last = out.slice(-1);
+  if (last === ",") out = out.slice(0, -1);
+  while (stack.length > 0) {
+    out += stack.pop();
+  }
+  return out;
+}
+
+/**
+ * Extract the outermost JSON object from a string (handles nested braces)
+ */
+function extractOutermostJson(content: string): string | null {
+  const start = content.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < content.length; i++) {
+    const c = content[i];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return content.slice(start, i + 1);
+    }
+  }
+  return content.slice(start);
+}
+
+/**
+ * Parse rich travel plan from LLM response
+ * Returns both the itinerary array (for backward compatibility) and the full rich plan
+ */
+function parseRichTravelPlan(
   content: string,
   startDate: string,
   fallbackDays: number = 3,
-  logContext?: { sessionId?: string; taskId?: string; agentType?: string }
-): ItineraryDay[] {
+  destination: string,
+  logContext?: LogContext
+): { itinerary: ItineraryDay[]; richPlan: RichTravelPlan | null } {
+  let parsed: Record<string, unknown> | null = null;
+  const trimmed = content.trim();
+
+  // Strategy 1: Parse entire content as JSON
   try {
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
+    parsed = JSON.parse(trimmed);
+  } catch {
+    parsed = null;
+  }
+
+  // Strategy 2: Extract from markdown code block (capture full content between ```)
+  if (!parsed) {
+    const codeBlockMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch && codeBlockMatch[1]) {
+      const blockContent = codeBlockMatch[1].trim();
+      try {
+        parsed = JSON.parse(blockContent);
+      } catch {
+        try {
+          parsed = JSON.parse(repairTruncatedJson(blockContent));
+        } catch {
+          // try outermost object from block
+          const outer = extractOutermostJson(blockContent);
+          if (outer) {
+            try {
+              parsed = JSON.parse(repairTruncatedJson(outer));
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Strategy 3: Find outermost JSON object in content (handles truncated)
+  if (!parsed) {
+    const outer = extractOutermostJson(trimmed);
+    if (outer) {
+      try {
+        parsed = JSON.parse(outer);
+      } catch {
+        try {
+          parsed = JSON.parse(repairTruncatedJson(outer));
+        } catch (parseError) {
+          logger.warn("Failed to parse extracted JSON from LLM response", {
+            error: parseError,
+            contentPreview: trimmed.substring(0, 500),
+            logContext,
+          });
+        }
+      }
+    }
+  }
+
+  if (!parsed) {
+    logger.warn("Could not extract JSON from LLM response", {
+      contentLength: content.length,
+      contentPreview: content.substring(0, 500),
+      logContext,
+    });
+  }
+
+  if (parsed) {
+    try {
       const days = parsed.itinerary || [];
 
       if (Array.isArray(days) && days.length > 0) {
-        return days.map((day: Record<string, unknown>, index: number) => {
+        // Parse itinerary days
+        const itinerary = days.map((day: Record<string, unknown>, index: number) => {
           const date = new Date(startDate);
           date.setDate(date.getDate() + index);
 
@@ -244,71 +360,173 @@ function parseItinerary(
             transportation: (day.transportation as ItineraryDay["transportation"]) || [],
             estimatedCost: (day.estimatedCost as number) || 100,
             notes: (day.notes as string[]) || [],
+            weatherConsiderations: (day.weatherConsiderations as string) || undefined,
           };
         }) as ItineraryDay[];
+
+        // Build rich plan from parsed response
+        const richPlan: RichTravelPlan = {
+          quickLogistics: (parsed.quickLogistics as QuickLogistics) || createDefaultLogistics(destination, startDate),
+          accommodation: (parsed.accommodation as AccommodationStrategy) || { areaStrategy: "", recommendations: [] },
+          itinerary,
+          transportAndFlights: (parsed.transportAndFlights as TransportInfo) || createDefaultTransport(),
+          budgetSnapshot: (parsed.budgetSnapshot as BudgetSnapshot) || createDefaultBudget(fallbackDays),
+          bookingAdvice: (parsed.bookingAdvice as BookingAdvice) || { bookNow: [], bookSoon: [], bookOnArrival: [] },
+          tips: (parsed.tips as string[]) || [],
+          packingList: (parsed.packingList as string[]) || [],
+        };
+
+        logger.info(`Successfully parsed rich travel plan with ${itinerary.length} days`, logContext ?? {});
+        return { itinerary, richPlan };
+      } else {
+        logger.warn("Parsed JSON but itinerary array is empty or invalid", {
+          hasItinerary: !!parsed.itinerary,
+          itineraryType: typeof parsed.itinerary,
+          logContext,
+        });
       }
+    } catch (error) {
+      logger.warn("Failed to process parsed JSON", {
+        error,
+        parsedKeys: parsed ? Object.keys(parsed) : [],
+        logContext,
+      });
     }
-  } catch (error) {
-    logger.warn("Failed to parse itinerary JSON", { error });
   }
 
+  // Fallback with destination-aware defaults
   const days = fallbackDays > 0 ? fallbackDays : 3;
   logger.warn(
-    `Using default ${days}-day itinerary (LLM response did not contain valid itinerary JSON)`,
+    `Using destination-aware fallback for ${destination} (${days} days)`,
     logContext ?? {}
   );
-  return createDefaultItinerary(startDate, days);
+  return {
+    itinerary: createDestinationAwareItinerary(destination, startDate, days),
+    richPlan: null,
+  };
 }
 
 /**
- * Create a default itinerary
+ * Create default logistics when not provided by LLM
  */
-function createDefaultItinerary(startDate: string, days: number): ItineraryDay[] {
+function createDefaultLogistics(destination: string, startDate: string): QuickLogistics {
+  return {
+    dates: startDate,
+    weather: `Check current weather forecast for ${destination}`,
+    visaInfo: `Check visa requirements for ${destination} based on your nationality`,
+    currency: `Research local currency and payment methods for ${destination}`,
+    mustHaves: ["Travel insurance", "Passport with 6+ months validity", "Return ticket"],
+  };
+}
+
+/**
+ * Create default transport info when not provided by LLM
+ */
+function createDefaultTransport(): TransportInfo {
+  return {
+    gettingThere: "Research flight options from your departure city",
+    gettingAround: "Use ride-hailing apps (Grab, Uber) or local taxis",
+    airportTransfer: "Arrange airport transfer through your hotel or use ride-hailing apps",
+  };
+}
+
+/**
+ * Create default budget snapshot when not provided by LLM
+ */
+function createDefaultBudget(days: number): BudgetSnapshot {
+  return {
+    perPersonPerDay: {
+      backpacker: { total: 50, breakdown: { accommodation: 20, food: 15, activities: 10, transport: 5 } },
+      midRange: { total: 120, breakdown: { accommodation: 60, food: 30, activities: 20, transport: 10 } },
+      comfortable: { total: 250, breakdown: { accommodation: 130, food: 60, activities: 40, transport: 20 } },
+    },
+    currency: "USD",
+    totalTripEstimate: {
+      backpacker: 50 * days,
+      midRange: 120 * days,
+      comfortable: 250 * days,
+    },
+  };
+}
+
+/**
+ * Create a destination-aware itinerary when LLM parsing fails
+ * This provides structure while acknowledging detailed recommendations couldn't be generated
+ */
+function createDestinationAwareItinerary(
+  destination: string,
+  startDate: string,
+  days: number
+): ItineraryDay[] {
   const result: ItineraryDay[] = [];
 
   for (let i = 0; i < days; i++) {
     const date = new Date(startDate);
     date.setDate(date.getDate() + i);
 
+    const theme = i === 0
+      ? `Arrival in ${destination}`
+      : i === days - 1
+        ? `Departure from ${destination}`
+        : `Exploring ${destination} - Day ${i + 1}`;
+
     result.push({
       dayNumber: i + 1,
       date,
-      theme: i === 0 ? "Arrival & Exploration" : i === days - 1 ? "Departure Day" : `Day ${i + 1} Adventures`,
+      theme,
       activities: [
         {
           id: `act_${i}_1`,
-          name: "Morning Activity",
-          description: "Explore local attractions",
-          location: "City Center",
-          duration: 180,
+          name: `Discover ${destination}`,
+          description: `Explore the unique attractions and experiences that ${destination} has to offer. For specific recommendations, please try again or provide more details about your interests.`,
+          location: destination,
+          duration: 240,
           cost: 50,
           currency: "USD",
           category: "sightseeing",
           bookingRequired: false,
+          tips: [
+            `Research top attractions in ${destination} before your visit`,
+            "Ask your hotel concierge for local recommendations",
+          ],
         },
       ],
       accommodation: i < days - 1 ? {
         id: `acc_${i}`,
-        name: "Recommended Hotel",
+        name: `Accommodation in ${destination}`,
         type: "hotel",
-        address: "Central Location",
-        pricePerNight: 100,
+        address: `Central ${destination}`,
+        pricePerNight: 80,
         currency: "USD",
-        amenities: ["WiFi", "Breakfast"],
+        amenities: ["WiFi", "Air Conditioning"],
       } : null,
       meals: [
         {
           id: `meal_${i}_1`,
           type: "lunch",
-          restaurantName: "Local Restaurant",
+          restaurantName: `Local cuisine in ${destination}`,
           cuisine: "Local",
-          location: "Near attractions",
+          location: destination,
           priceRange: "$$",
-          estimatedCost: 25,
+          estimatedCost: 20,
+          mustTry: ["Ask locals for signature dishes"],
+        },
+        {
+          id: `meal_${i}_2`,
+          type: "dinner",
+          restaurantName: `Evening dining in ${destination}`,
+          cuisine: "Local/International",
+          location: destination,
+          priceRange: "$$",
+          estimatedCost: 30,
         },
       ],
       transportation: [],
-      estimatedCost: 200,
+      estimatedCost: 150,
+      notes: [
+        `This is a basic itinerary structure for ${destination}.`,
+        "For detailed, specific recommendations, please try generating the itinerary again.",
+      ],
     });
   }
 
@@ -327,32 +545,81 @@ const confirmItineraryNode: TravelNodeFunction = async (state) => {
 
   logger.agentStep("confirmItinerary", "execution", logContext);
 
+  // Debug logging
+  logger.debug("ConfirmItinerary node executing", {
+    ...logContext,
+    inputPhase: state.currentPhase,
+    refinementFeedback: state.refinementFeedback,
+    awaitingRefinement: state.awaitingRefinement,
+    skipToConfirmation: state.skipToConfirmation,
+  });
+
   // If user already provided feedback, process it
   if (state.refinementFeedback) {
     const feedback = state.refinementFeedback.toLowerCase();
 
-    if (feedback.includes("good") || feedback.includes("proceed") || feedback.includes("ok")) {
-      return {
+    // Check for positive confirmation - expanded patterns
+    if (
+      feedback.includes("yes") ||
+      feedback.includes("good") ||
+      feedback.includes("proceed") ||
+      feedback.includes("ok") ||
+      feedback.includes("looks great") ||
+      feedback.includes("perfect")
+    ) {
+      // User confirmed - skip validation and mark as complete
+      // (validation is redundant since user explicitly approved)
+      const itinerarySummary = formatRichTravelPlanSummary(state.richPlan, state.itinerary || []);
+
+      const result = {
         awaitingRefinement: false,
-        currentPhase: "validation" as const,
+        refinementFeedback: null,
+        skipToConfirmation: false, // Clear skip flag
+        requiresHumanInput: false, // End flow so CLI does not re-show confirmation
+        currentPhase: "complete" as const,
+        finalResponse: `Great! Your trip is confirmed.\n\n${itinerarySummary}\n\nHave a wonderful trip! 🌴`,
       };
+
+      logger.info("Itinerary confirmed by user, marking complete", logContext);
+      logger.debug("ConfirmItinerary node output", {
+        ...logContext,
+        outputPhase: result.currentPhase,
+        requiresInput: false,
+        decision: "approved",
+      });
+
+      return result;
     }
 
-    // User wants changes - go back to itinerary generation
-    return {
+    // User wants changes - mark state for refinement and route via adjustItinerary
+    const result = {
       awaitingRefinement: false,
-      currentPhase: "planning" as const,
+      // Keep refinementFeedback so the adjustItinerary node can use it
+      refinementFeedback: state.refinementFeedback,
+      skipToConfirmation: false, // Clear skip flag
+      currentPhase: "execution" as const,
       gatheredInfo: {
+        ...state.gatheredInfo,
         refinementRequest: state.refinementFeedback,
       },
     };
+
+    logger.debug("ConfirmItinerary node output", {
+      ...logContext,
+      outputPhase: result.currentPhase,
+      requiresInput: false,
+      decision: "changes",
+    });
+
+    return result;
   }
 
   // Ask for confirmation
-  const itinerarySummary = formatItinerarySummary(state.itinerary || []);
+  const itinerarySummary = formatRichTravelPlanSummary(state.richPlan, state.itinerary || []);
 
-  return {
+  const result = {
     awaitingRefinement: true,
+    currentPhase: "planning" as const,
     requiresHumanInput: true,
     humanInputRequest: {
       type: "confirmation" as const,
@@ -361,38 +628,262 @@ const confirmItineraryNode: TravelNodeFunction = async (state) => {
       required: true,
     },
   };
+
+  logger.debug("ConfirmItinerary node output", {
+    ...logContext,
+    outputPhase: result.currentPhase,
+    requiresInput: result.requiresHumanInput,
+    decision: "awaiting",
+  });
+
+  return result;
 };
 
 /**
- * Format itinerary summary for display
+ * Format rich travel plan for display
  */
-function formatItinerarySummary(itinerary: ItineraryDay[]): string {
-  if (itinerary.length === 0) {
+function formatRichTravelPlanSummary(
+  richPlan: RichTravelPlan | null,
+  itinerary: ItineraryDay[]
+): string {
+  if (!richPlan && itinerary.length === 0) {
     return "No itinerary generated yet.";
   }
 
   const lines: string[] = [];
 
-  for (const day of itinerary) {
-    lines.push(`**Day ${day.dayNumber}: ${day.theme}**`);
-
-    if (day.activities.length > 0) {
-      lines.push(`  Activities: ${day.activities.map((a) => a.name).join(", ")}`);
+  // Quick Logistics Section
+  if (richPlan?.quickLogistics) {
+    const ql = richPlan.quickLogistics;
+    lines.push("## Quick Logistics");
+    lines.push(`- **Dates**: ${ql.dates}`);
+    lines.push(`- **Weather**: ${ql.weather}`);
+    lines.push(`- **Visa**: ${ql.visaInfo}`);
+    lines.push(`- **Currency**: ${ql.currency}`);
+    if (ql.mustHaves?.length) {
+      lines.push(`- **Must-haves**: ${ql.mustHaves.join(", ")}`);
     }
-
-    if (day.meals.length > 0) {
-      lines.push(`  Dining: ${day.meals.map((m) => m.restaurantName).join(", ")}`);
-    }
-
-    lines.push(`  Est. Cost: $${day.estimatedCost}`);
     lines.push("");
   }
 
-  const totalCost = itinerary.reduce((sum, day) => sum + day.estimatedCost, 0);
-  lines.push(`**Total Estimated Cost: $${totalCost}**`);
+  // Accommodation Strategy
+  if (richPlan?.accommodation?.areaStrategy) {
+    lines.push("## Where to Stay");
+    lines.push(richPlan.accommodation.areaStrategy);
+    lines.push("");
+    for (const rec of richPlan.accommodation.recommendations || []) {
+      const budget = rec.nightlyBudget;
+      lines.push(`- **${rec.area}**: ${rec.whyStayHere}`);
+      lines.push(`  Budget: ~$${budget.budget}/night | Mid-range: ~$${budget.midRange}/night | Luxury: ~$${budget.luxury}/night`);
+      if (rec.specificPlaces?.length) {
+        lines.push(`  Try: ${rec.specificPlaces.slice(0, 3).join(", ")}`);
+      }
+    }
+    lines.push("");
+  }
+
+  // Day-by-Day Itinerary
+  lines.push("## Day-by-Day Itinerary");
+  lines.push("");
+
+  for (const day of itinerary) {
+    lines.push(`### Day ${day.dayNumber}: ${day.theme}`);
+
+    if (day.activities.length > 0) {
+      for (const act of day.activities) {
+        // Check for startTime (extended field from rich plan)
+        const actWithTime = act as typeof act & { startTime?: string };
+        const time = actWithTime.startTime ? `${actWithTime.startTime} - ` : "";
+        lines.push(`- ${time}**${act.name}** @ ${act.location}`);
+        if (act.description && act.description.length < 150) {
+          lines.push(`  ${act.description}`);
+        }
+        if (act.tips?.length) {
+          lines.push(`  _Tip: ${act.tips[0]}_`);
+        }
+      }
+    }
+
+    if (day.meals.length > 0) {
+      const mealsList = day.meals
+        .map((m) => `${m.type}: ${m.restaurantName}`)
+        .join(" | ");
+      lines.push(`- **Meals**: ${mealsList}`);
+    }
+
+    // Weather considerations if available (extended field from rich plan)
+    const dayWithWeather = day as typeof day & { weatherConsiderations?: string };
+    if (dayWithWeather.weatherConsiderations) {
+      lines.push(`- _Weather: ${dayWithWeather.weatherConsiderations}_`);
+    }
+
+    lines.push(`- **Daily cost**: ~$${day.estimatedCost}`);
+    lines.push("");
+  }
+
+  // Budget Snapshot
+  if (richPlan?.budgetSnapshot) {
+    const bs = richPlan.budgetSnapshot;
+    lines.push("## Budget Snapshot (per person/day)");
+    lines.push(`- **Backpacker**: ~$${bs.perPersonPerDay.backpacker.total}/day`);
+    lines.push(`- **Mid-range**: ~$${bs.perPersonPerDay.midRange.total}/day`);
+    lines.push(`- **Comfortable**: ~$${bs.perPersonPerDay.comfortable.total}/day`);
+    lines.push("");
+    lines.push(`**Total trip estimate**: $${bs.totalTripEstimate.backpacker} - $${bs.totalTripEstimate.comfortable}`);
+    lines.push("");
+  }
+
+  // Transport
+  if (richPlan?.transportAndFlights) {
+    const tf = richPlan.transportAndFlights;
+    lines.push("## Getting There & Around");
+    if (tf.gettingThere) lines.push(`- **Flights**: ${tf.gettingThere}`);
+    if (tf.gettingAround) lines.push(`- **Local transport**: ${tf.gettingAround}`);
+    if (tf.airportTransfer) lines.push(`- **Airport transfer**: ${tf.airportTransfer}`);
+    lines.push("");
+  }
+
+  // Booking Advice
+  if (richPlan?.bookingAdvice) {
+    const ba = richPlan.bookingAdvice;
+    lines.push("## What to Book");
+    if (ba.bookNow?.length) lines.push(`- **Book now**: ${ba.bookNow.join(", ")}`);
+    if (ba.bookSoon?.length) lines.push(`- **Book soon**: ${ba.bookSoon.join(", ")}`);
+    if (ba.bookOnArrival?.length) lines.push(`- **Book on arrival**: ${ba.bookOnArrival.join(", ")}`);
+    lines.push("");
+  }
+
+  // Pro Tips
+  if (richPlan?.tips?.length) {
+    lines.push("## Pro Tips");
+    for (const tip of richPlan.tips.slice(0, 5)) {
+      lines.push(`- ${tip}`);
+    }
+    lines.push("");
+  }
+
+  // Packing List
+  if (richPlan?.packingList?.length) {
+    lines.push("## Packing Essentials");
+    lines.push(richPlan.packingList.slice(0, 8).join(", "));
+    lines.push("");
+  }
+
+  // Fallback: simple summary if no rich plan
+  if (!richPlan) {
+    const totalCost = itinerary.reduce((sum, day) => sum + day.estimatedCost, 0);
+    lines.push(`**Total Estimated Cost: $${totalCost}**`);
+  }
 
   return lines.join("\n");
 }
+
+/**
+ * Adjust itinerary node - refines an existing itinerary based on user feedback
+ */
+const adjustItineraryNode: TravelNodeFunction = async (state) => {
+  const logContext = {
+    sessionId: state.sessionId,
+    taskId: state.taskId,
+    agentType: "travel" as const,
+  };
+
+  logger.agentStep("adjustItinerary", "execution", logContext);
+
+  try {
+    const feedback =
+      state.refinementFeedback ||
+      (state.gatheredInfo.refinementRequest as string) ||
+      "";
+
+    const currentItinerary = state.itinerary || [];
+    const startDate =
+      state.startDate?.toString() ||
+      (state.gatheredInfo.startDate as string) ||
+      new Date().toISOString();
+
+    const preferences = {
+      destination:
+        state.destination || (state.gatheredInfo.destination as string),
+      startDate:
+        state.startDate?.toString() ||
+        (state.gatheredInfo.startDate as string) ||
+        null,
+      endDate:
+        state.endDate?.toString() ||
+        (state.gatheredInfo.endDate as string) ||
+        null,
+      budget: state.budget ?? {
+        min: state.gatheredInfo.budgetMin,
+        max: state.gatheredInfo.budgetMax,
+        currency: state.gatheredInfo.currency,
+      },
+      travelStyle:
+        state.preferences.travelStyle.length > 0
+          ? state.preferences.travelStyle
+          : ((state.gatheredInfo.travelStyle as string[]) || []),
+      interests:
+        state.preferences.interests.length > 0
+          ? state.preferences.interests
+          : ((state.gatheredInfo.interests as string[]) || []),
+    };
+
+    // Include current rich plan in refinement context
+    const currentRichPlan = state.richPlan;
+    const refinementContext = currentRichPlan
+      ? JSON.stringify({ ...currentRichPlan, itinerary: currentItinerary }, null, 2)
+      : JSON.stringify(currentItinerary ?? [], null, 2);
+
+    const response = await itineraryLlm.invoke(
+      await travelRefinementPrompt.formatMessages({
+        currentItinerary: refinementContext,
+        feedback,
+        preferences: JSON.stringify(preferences, null, 2),
+      })
+    );
+
+    const content = response.content as string;
+    const tripDays =
+      getTripDuration(state) ||
+      (Array.isArray(currentItinerary) ? currentItinerary.length : 0) ||
+      3;
+    const destination =
+      state.destination || (state.gatheredInfo.destination as string) || "destination";
+
+    const { itinerary, richPlan } = parseRichTravelPlan(
+      content,
+      startDate,
+      tripDays,
+      destination,
+      logContext
+    );
+
+    logger.info(
+      `Adjusted itinerary with ${itinerary.length}-day plan`,
+      logContext
+    );
+
+    return {
+      itinerary,
+      richPlan: richPlan || state.richPlan, // Keep previous rich plan if new one wasn't parsed
+      refinementFeedback: null,
+      skipToConfirmation: false,
+      awaitingRefinement: false,
+      gatheredInfo: {
+        ...state.gatheredInfo,
+        refinementRequest: feedback,
+        itineraryDays: itinerary.length,
+        totalEstimatedCost: itinerary.reduce(
+          (sum, day) => sum + day.estimatedCost,
+          0
+        ),
+      },
+    };
+  } catch (error) {
+    logger.error("Adjust itinerary failed", error as Error, logContext);
+    return { error: (error as Error).message };
+  }
+};
 
 /**
  * Create the travel planner graph
@@ -400,15 +891,15 @@ function formatItinerarySummary(itinerary: ItineraryDay[]): string {
 export function createTravelGraph() {
   const graph = new StateGraph(TravelStateAnnotation)
     // Core nodes
-    .addNode("clarification", travelClarificationNode as unknown as TravelNodeFunction)
+    .addNode("clarification", travelClarificationWrapper as unknown as TravelNodeFunction)
     .addNode("planning", travelPlanningNode as unknown as TravelNodeFunction)
     .addNode("execution", executionNode as unknown as TravelNodeFunction)
     .addNode("validation", travelValidationNode as unknown as TravelNodeFunction)
 
     // Travel-specific nodes
-    .addNode("researchDestination", researchDestinationNode)
     .addNode("generateItinerary", generateItineraryNode)
     .addNode("confirmItinerary", confirmItineraryNode)
+    .addNode("adjustItinerary", adjustItineraryNode)
 
     // Edges
     .addEdge(START, "clarification")
@@ -416,21 +907,34 @@ export function createTravelGraph() {
     // Clarification routing
     .addConditionalEdges("clarification", (state: TravelAgentState) => {
       if (state.error) return END;
+
+      // If skipping to confirmation (resuming from confirmation request with user feedback)
+      if (state.skipToConfirmation && state.refinementFeedback) {
+        return "confirmItinerary";
+      }
+
       if (state.hasSufficientInfo) return "planning";
       if (state.requiresHumanInput) return END;
       return "clarification";
     })
 
-    // Planning routing - go to research flow
+    // Planning routing - go to generic execution flow
     .addConditionalEdges("planning", (state: TravelAgentState) => {
       if (state.error) return END;
-      return "researchDestination";
+      return "execution";
     })
 
-    // Research -> Generate itinerary
-    .addConditionalEdges("researchDestination", (state: TravelAgentState) => {
+    // Execution routing - loop over plan steps, then generate itinerary
+    .addConditionalEdges("execution", (state: TravelAgentState) => {
       if (state.error) return END;
-      return "generateItinerary";
+
+      const { executionPlan, currentStepIndex } = state;
+
+      if (!executionPlan || currentStepIndex >= (executionPlan?.length || 0)) {
+        return "generateItinerary";
+      }
+
+      return "execution";
     })
 
     // Generate itinerary -> Confirm with user
@@ -442,9 +946,42 @@ export function createTravelGraph() {
     // Confirm itinerary routing
     .addConditionalEdges("confirmItinerary", (state: TravelAgentState) => {
       if (state.error) return END;
+
+      // If user requested changes, route to itinerary adjustment
+      if (
+        state.currentPhase === "execution" &&
+        (state.gatheredInfo?.refinementRequest || state.refinementFeedback)
+      ) {
+        return "adjustItinerary";
+      }
+
+      // If waiting for human input, pause the graph
       if (state.requiresHumanInput) return END;
-      if (state.currentPhase === "planning") return "researchDestination";
-      return "validation";
+
+      // After user feedback is processed:
+      // - Approved: currentPhase = "complete" (skip validation)
+      // - Changes requested: currentPhase = "planning"
+
+      if (state.currentPhase === "complete") {
+        return END; // Task complete, no more processing needed
+      }
+
+      if (state.currentPhase === "planning") {
+        return "planning";
+      }
+
+      // Fallback - go to validation if somehow in validation phase
+      if (state.currentPhase === "validation") {
+        return "validation";
+      }
+
+      return END;
+    })
+
+    // Adjust itinerary routing
+    .addConditionalEdges("adjustItinerary", (state: TravelAgentState) => {
+      if (state.error) return END;
+      return "confirmItinerary";
     })
 
     // Validation routing
