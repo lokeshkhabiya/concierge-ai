@@ -1,5 +1,5 @@
 // LLM clients
-export { llm, streamingLlm, classificationLlm, createLlm } from "./client";
+export { llm, planningLlm, streamingLlm, classificationLlm, createLlm } from "./client";
 
 // Core prompts
 export {

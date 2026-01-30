@@ -11,17 +11,11 @@ import {
 	executionNode,
 	travelValidationNode,
 } from "./nodes";
-import { createLlm } from "../llm";
+import { llm } from "../llm";
 import {
 	travelItineraryGenerationPrompt,
 	travelRefinementPrompt,
 } from "../llm/templates/travelPlanningPrompt";
-
-const itineraryLlm = createLlm({
-	temperature: 1,
-	maxTokens: 8192,
-	timeout: 120000, // 2 minute timeout
-});
 import { logger, type LogContext } from "../logger";
 import type { ItineraryDay, RichTravelPlan, QuickLogistics, BudgetSnapshot, TransportInfo, AccommodationStrategy, BookingAdvice } from "../types";
 
@@ -84,107 +78,110 @@ function trimResearchResultsForPrompt(
 }
 
 const generateItineraryNode: TravelNodeFunction = async (state) => {
-	const logContext = {
-		sessionId: state.sessionId,
-		taskId: state.taskId,
-		agentType: "travel" as const,
-	};
+  const logContext = {
+    sessionId: state.sessionId,
+    taskId: state.taskId,
+    agentType: "travel" as const,
+  };
 
-	logger.agentStep("generateItinerary", "execution", logContext);
+  logger.agentStep("generateItinerary", "execution", logContext);
 
-	try {
-		const destination =
-			state.destination || (state.gatheredInfo.destination as string);
-		const startDate =
-			state.startDate?.toString() ||
-			(state.gatheredInfo.startDate as string) ||
-			new Date().toISOString();
-		const endDate =
-			state.endDate?.toString() ||
-			(state.gatheredInfo.endDate as string) ||
-			new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-		const numberOfTravelers = state.numberOfTravelers || 1;
+  try {
+    const destination =
+      state.destination || (state.gatheredInfo.destination as string);
+    const startDate =
+      state.startDate?.toString() ||
+      (state.gatheredInfo.startDate as string) ||
+      new Date().toISOString();
+    const endDate =
+      state.endDate?.toString() ||
+      (state.gatheredInfo.endDate as string) ||
+      new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const numberOfTravelers = state.numberOfTravelers || 1;
 
-		const trimmedResearch = trimResearchResultsForPrompt(
-			state.researchResults ?? {}
-		);
+    const trimmedResearch = trimResearchResultsForPrompt(
+      state.researchResults ?? {}
+    );
 
-		const researchJson = JSON.stringify(trimmedResearch, null, 2);
-		const truncatedResearch = researchJson.length > 8000
-			? researchJson.slice(0, 8000) + "...(truncated)"
-			: researchJson;
+    // Limit research results to avoid exceeding context window
+    const researchJson = JSON.stringify(trimmedResearch, null, 2);
+    const truncatedResearch = researchJson.length > 8000
+      ? researchJson.slice(0, 8000) + "...(truncated)"
+      : researchJson;
 
-		logger.debug("Invoking LLM for itinerary generation", {
-			...logContext,
-			destination,
-			startDate,
-			endDate,
-			researchResultsLength: researchJson.length,
-			truncated: researchJson.length > 8000,
-		});
+    logger.debug("Invoking LLM for itinerary generation", {
+      ...logContext,
+      destination,
+      startDate,
+      endDate,
+      researchResultsLength: researchJson.length,
+      truncated: researchJson.length > 8000,
+    });
 
-		const messages = await travelItineraryGenerationPrompt.formatMessages({
-			destination,
-			startDate,
-			endDate,
-			budget: state.budget
-				? `${state.budget.min}-${state.budget.max} ${state.budget.currency}`
-				: state.gatheredInfo.budgetMax
-					? `up to ${state.gatheredInfo.budgetMax}`
-					: "flexible",
-			travelStyle:
-				state.preferences.travelStyle.join(", ") ||
-				(state.gatheredInfo.travelStyle as string[])?.join(", ") ||
-				"general",
-			interests:
-				state.preferences.interests.join(", ") ||
-				(state.gatheredInfo.interests as string[])?.join(", ") ||
-				"sightseeing, local cuisine",
-			researchResults: truncatedResearch,
-			numberOfTravelers: numberOfTravelers.toString(),
-		});
+    // Format messages first to catch any template errors
+    const messages = await travelItineraryGenerationPrompt.formatMessages({
+      destination,
+      startDate,
+      endDate,
+      budget: state.budget
+        ? `${state.budget.min}-${state.budget.max} ${state.budget.currency}`
+        : state.gatheredInfo.budgetMax
+          ? `up to ${state.gatheredInfo.budgetMax}`
+          : "flexible",
+      travelStyle:
+        state.preferences.travelStyle.join(", ") ||
+        (state.gatheredInfo.travelStyle as string[])?.join(", ") ||
+        "general",
+      interests:
+        state.preferences.interests.join(", ") ||
+        (state.gatheredInfo.interests as string[])?.join(", ") ||
+        "sightseeing, local cuisine",
+      researchResults: truncatedResearch,
+      numberOfTravelers: numberOfTravelers.toString(),
+    });
 
-		logger.debug("Formatted prompt, calling LLM...", {
-			...logContext,
-			messageCount: messages.length,
-		});
+    logger.debug("Formatted prompt, calling LLM...", {
+      ...logContext,
+      messageCount: messages.length,
+    });
 
-		const response = await itineraryLlm.invoke(messages);
+    const response = await llm.invoke(messages);
 
-		const content = response.content as string;
+    const content = response.content as string;
 
-		logger.debug("LLM response received", {
-			...logContext,
-			contentLength: content?.length || 0,
-			contentPreview: content?.slice(0, 200) || "(empty)",
-		});
+    // Log response info for debugging
+    logger.debug("LLM response received", {
+      ...logContext,
+      contentLength: content?.length || 0,
+      contentPreview: content?.slice(0, 200) || "(empty)",
+    });
 
-		const tripDays = getTripDuration(state) || 2;
-		const { itinerary, richPlan } = parseRichTravelPlan(
-			content,
-			startDate,
-			tripDays,
-			destination,
-			logContext
-		);
+    const tripDays = getTripDuration(state) || 2;
+    const { itinerary, richPlan } = parseRichTravelPlan(
+      content,
+      startDate,
+      tripDays,
+      destination,
+      logContext
+    );
 
-		logger.info(`Generated ${itinerary.length}-day itinerary${richPlan ? ' with rich plan' : ''}`, logContext);
+    logger.info(`Generated ${itinerary.length}-day itinerary${richPlan ? ' with rich plan' : ''}`, logContext);
 
-		return {
-			itinerary,
-			richPlan,
-			gatheredInfo: {
-				itineraryDays: itinerary.length,
-				totalEstimatedCost: itinerary.reduce(
-					(sum, day) => sum + day.estimatedCost,
-					0
-				),
-			},
-		};
-	} catch (error) {
-		logger.error("Generate itinerary failed", error as Error, logContext);
-		return { error: (error as Error).message };
-	}
+    return {
+      itinerary,
+      richPlan,
+      gatheredInfo: {
+        itineraryDays: itinerary.length,
+        totalEstimatedCost: itinerary.reduce(
+          (sum, day) => sum + day.estimatedCost,
+          0
+        ),
+      },
+    };
+  } catch (error) {
+    logger.error("Generate itinerary failed", error as Error, logContext);
+    return { error: (error as Error).message };
+  }
 };
 
 function repairTruncatedJson(raw: string): string {
@@ -720,105 +717,107 @@ function formatRichTravelPlanSummary(
 }
 
 const adjustItineraryNode: TravelNodeFunction = async (state) => {
-	const logContext = {
-		sessionId: state.sessionId,
-		taskId: state.taskId,
-		agentType: "travel" as const,
-	};
+  const logContext = {
+    sessionId: state.sessionId,
+    taskId: state.taskId,
+    agentType: "travel" as const,
+  };
 
-	logger.agentStep("adjustItinerary", "execution", logContext);
+  logger.agentStep("adjustItinerary", "execution", logContext);
 
-	try {
-		const feedback =
-			state.refinementFeedback ||
-			(state.gatheredInfo.refinementRequest as string) ||
-			"";
+  try {
+    const feedback =
+      state.refinementFeedback ||
+      (state.gatheredInfo.refinementRequest as string) ||
+      "";
 
-		const currentItinerary = state.itinerary || [];
-		const startDate =
-			state.startDate?.toString() ||
-			(state.gatheredInfo.startDate as string) ||
-			new Date().toISOString();
+    const currentItinerary = state.itinerary || [];
+    const startDate =
+      state.startDate?.toString() ||
+      (state.gatheredInfo.startDate as string) ||
+      new Date().toISOString();
 
-		const preferences = {
-			destination:
-				state.destination || (state.gatheredInfo.destination as string),
-			startDate:
-				state.startDate?.toString() ||
-				(state.gatheredInfo.startDate as string) ||
-				null,
-			endDate:
-				state.endDate?.toString() ||
-				(state.gatheredInfo.endDate as string) ||
-				null,
-			budget: state.budget ?? {
-				min: state.gatheredInfo.budgetMin,
-				max: state.gatheredInfo.budgetMax,
-				currency: state.gatheredInfo.currency,
-			},
-			travelStyle:
-				state.preferences.travelStyle.length > 0
-					? state.preferences.travelStyle
-					: ((state.gatheredInfo.travelStyle as string[]) || []),
-			interests:
-				state.preferences.interests.length > 0
-					? state.preferences.interests
-					: ((state.gatheredInfo.interests as string[]) || []),
-		};
-		const currentRichPlan = state.richPlan;
-		const refinementContext = currentRichPlan
-			? JSON.stringify({ ...currentRichPlan, itinerary: currentItinerary }, null, 2)
-			: JSON.stringify(currentItinerary ?? [], null, 2);
+    const preferences = {
+      destination:
+        state.destination || (state.gatheredInfo.destination as string),
+      startDate:
+        state.startDate?.toString() ||
+        (state.gatheredInfo.startDate as string) ||
+        null,
+      endDate:
+        state.endDate?.toString() ||
+        (state.gatheredInfo.endDate as string) ||
+        null,
+      budget: state.budget ?? {
+        min: state.gatheredInfo.budgetMin,
+        max: state.gatheredInfo.budgetMax,
+        currency: state.gatheredInfo.currency,
+      },
+      travelStyle:
+        state.preferences.travelStyle.length > 0
+          ? state.preferences.travelStyle
+          : ((state.gatheredInfo.travelStyle as string[]) || []),
+      interests:
+        state.preferences.interests.length > 0
+          ? state.preferences.interests
+          : ((state.gatheredInfo.interests as string[]) || []),
+    };
 
-		const response = await itineraryLlm.invoke(
-			await travelRefinementPrompt.formatMessages({
-				currentItinerary: refinementContext,
-				feedback,
-				preferences: JSON.stringify(preferences, null, 2),
-			})
-		);
+    // Include current rich plan in refinement context
+    const currentRichPlan = state.richPlan;
+    const refinementContext = currentRichPlan
+      ? JSON.stringify({ ...currentRichPlan, itinerary: currentItinerary }, null, 2)
+      : JSON.stringify(currentItinerary ?? [], null, 2);
 
-		const content = response.content as string;
-		const tripDays =
-			getTripDuration(state) ||
-			(Array.isArray(currentItinerary) ? currentItinerary.length : 0) ||
-			3;
-		const destination =
-			state.destination || (state.gatheredInfo.destination as string) || "destination";
+    const response = await llm.invoke(
+      await travelRefinementPrompt.formatMessages({
+        currentItinerary: refinementContext,
+        feedback,
+        preferences: JSON.stringify(preferences, null, 2),
+      })
+    );
 
-		const { itinerary, richPlan } = parseRichTravelPlan(
-			content,
-			startDate,
-			tripDays,
-			destination,
-			logContext
-		);
+    const content = response.content as string;
+    const tripDays =
+      getTripDuration(state) ||
+      (Array.isArray(currentItinerary) ? currentItinerary.length : 0) ||
+      3;
+    const destination =
+      state.destination || (state.gatheredInfo.destination as string) || "destination";
 
-		logger.info(
-			`Adjusted itinerary with ${itinerary.length}-day plan`,
-			logContext
-		);
+    const { itinerary, richPlan } = parseRichTravelPlan(
+      content,
+      startDate,
+      tripDays,
+      destination,
+      logContext
+    );
 
-		return {
-			itinerary,
-			richPlan: richPlan || state.richPlan,
-			refinementFeedback: null,
-			skipToConfirmation: false,
-			awaitingRefinement: false,
-			gatheredInfo: {
-				...state.gatheredInfo,
-				refinementRequest: feedback,
-				itineraryDays: itinerary.length,
-				totalEstimatedCost: itinerary.reduce(
-					(sum, day) => sum + day.estimatedCost,
-					0
-				),
-			},
-		};
-	} catch (error) {
-		logger.error("Adjust itinerary failed", error as Error, logContext);
-		return { error: (error as Error).message };
-	}
+    logger.info(
+      `Adjusted itinerary with ${itinerary.length}-day plan`,
+      logContext
+    );
+
+    return {
+      itinerary,
+      richPlan: richPlan || state.richPlan, // Keep previous rich plan if new one wasn't parsed
+      refinementFeedback: null,
+      skipToConfirmation: false,
+      awaitingRefinement: false,
+      gatheredInfo: {
+        ...state.gatheredInfo,
+        refinementRequest: feedback,
+        itineraryDays: itinerary.length,
+        totalEstimatedCost: itinerary.reduce(
+          (sum, day) => sum + day.estimatedCost,
+          0
+        ),
+      },
+    };
+  } catch (error) {
+    logger.error("Adjust itinerary failed", error as Error, logContext);
+    return { error: (error as Error).message };
+  }
 };
 
 export function createTravelGraph() {

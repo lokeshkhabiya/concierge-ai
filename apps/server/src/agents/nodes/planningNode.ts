@@ -1,5 +1,5 @@
 import { AIMessage } from "@langchain/core/messages";
-import { llm } from "../../llm";
+import { planningLlm } from "../../llm";
 import { medicinePlanningPrompt } from "../../llm/templates/medicinePlanningPrompt";
 import { travelPlanningPrompt } from "../../llm/templates/travelPlanningPrompt";
 import { toolRegistry } from "../tools";
@@ -16,57 +16,61 @@ interface PlanningResult {
 }
 
 export function createPlanningNode(taskType: Exclude<IntentType, "unknown">) {
-	const prompt =
-		taskType === "medicine" ? medicinePlanningPrompt : travelPlanningPrompt;
+  const prompt =
+    taskType === "medicine" ? medicinePlanningPrompt : travelPlanningPrompt;
 
-	return async (state: BaseAgentState): Promise<PlanningResult> => {
-		const logContext = {
-			sessionId: state.sessionId,
-			taskId: state.taskId,
-			agentType: taskType,
-		};
+  return async (state: BaseAgentState): Promise<PlanningResult> => {
+    const logContext = {
+      sessionId: state.sessionId,
+      taskId: state.taskId,
+      agentType: taskType,
+    };
 
-		logger.agentStep("planning", "planning", logContext);
+    logger.agentStep("planning", "planning", logContext);
 
-		try {
-			const availableTools = toolRegistry.getToolDescriptionsForAgent(taskType);
+    try {
+      // Get available tools for this agent type
+      const availableTools = toolRegistry.getToolDescriptionsForAgent(taskType);
 
-			const promptArgs = buildPromptArgs(taskType, state, availableTools);
+      // Build prompt arguments based on task type
+      const promptArgs = buildPromptArgs(taskType, state, availableTools);
 
-			const response = await llm.invoke(await prompt.formatMessages(promptArgs));
+      // Generate execution plan using gpt-5 for complex planning
+      const response = await planningLlm.invoke(await prompt.formatMessages(promptArgs));
 
-			const content = response.content as string;
-			logger.debug("Planning response", { content }, logContext);
+      const content = response.content as string;
+      logger.debug("Planning response", { content }, logContext);
 
-			const plan = parseExecutionPlan(content);
+      // Parse the execution plan
+      const plan = parseExecutionPlan(content);
 
-			if (!plan || plan.length === 0) {
-				logger.warn("Failed to parse execution plan", { content }, logContext);
-				return {
-					error: "Failed to create execution plan",
-					currentPhase: "error",
-				};
-			}
+      if (!plan || plan.length === 0) {
+        logger.warn("Failed to parse execution plan", { content }, logContext);
+        return {
+          error: "Failed to create execution plan",
+          currentPhase: "error",
+        };
+      }
 
-			logger.info(`Created execution plan with ${plan.length} steps`, logContext);
+      logger.info(`Created execution plan with ${plan.length} steps`, logContext);
 
-			return {
-				executionPlan: plan,
-				currentStepIndex: 0,
-				currentPhase: "execution",
-				messages: [
-					new AIMessage(`I've created a plan with ${plan.length} steps. Starting execution...`),
-				],
-			};
-		} catch (error) {
-			logger.error("Planning failed", error as Error, logContext);
+      return {
+        executionPlan: plan,
+        currentStepIndex: 0,
+        currentPhase: "execution",
+        messages: [
+          new AIMessage(`I've created a plan with ${plan.length} steps. Starting execution...`),
+        ],
+      };
+    } catch (error) {
+      logger.error("Planning failed", error as Error, logContext);
 
-			return {
-				error: (error as Error).message,
-				currentPhase: "error",
-			};
-		}
-	};
+      return {
+        error: (error as Error).message,
+        currentPhase: "error",
+      };
+    }
+  };
 }
 
 function buildPromptArgs(

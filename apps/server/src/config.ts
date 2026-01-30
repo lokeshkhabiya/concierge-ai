@@ -8,9 +8,10 @@ export const config = {
 
   llm: {
     provider: "openai" as const,
-    model: "gpt-5",
+    model: "gpt-5-mini",
+    planningModel: "gpt-5",
     temperature: 1,
-    maxTokens: 8192,
+    maxTokens: 100000,
   },
 
   agents: {

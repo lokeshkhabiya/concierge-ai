@@ -2,9 +2,9 @@
 
 ## Demo Video
 
-<iframe width="560" height="315" src="https://www.youtube.com/embed/gUY2Ydz1Bss?autoplay=1&mute=1" title="Pokus Demo" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
-
-*[Watch on YouTube](https://youtu.be/gUY2Ydz1Bss) if the video above doesn’t play.*
+<a href="https://youtu.be/gUY2Ydz1Bss" target="_blank">
+  <img src="https://img.youtube.com/vi/gUY2Ydz1Bss/maxresdefault.jpg" width="560" alt="Pokus: AI Agent System for Real-World Task Completion">
+</a>
 
 ---
 
@@ -454,6 +454,8 @@ This section is an **explicit, honest snapshot** of what is built today. Evaluat
 | Hybrid intent classification (keyword + LLM fallback) | ✅ Implemented |
 | Domain-specific state schemas | ✅ Implemented |
 | Node-based execution: clarification → plan → execute → validate | ✅ Implemented |
+| Dual-model LLM setup (gpt-5-mini + gpt-5 for planning) | ✅ Implemented |
+| Parallel web search execution (batching up to 3 concurrent) | ✅ Implemented |
 
 ### Agents / Tasks
 
@@ -479,7 +481,7 @@ This section is an **explicit, honest snapshot** of what is built today. Evaluat
 | Redis | ❌ Not integrated |
 | Background worker / queue model | ❌ Not implemented |
 | Distributed execution | ❌ Not enabled |
-| Parallel tool execution | ❌ Not implemented |
+| Parallel tool execution (web_search) | ✅ Implemented (up to 3 concurrent searches) |
 ## Technology Stack
 
 | Layer | Technology | Purpose |
@@ -489,7 +491,7 @@ This section is an **explicit, honest snapshot** of what is built today. Evaluat
 | **Build System** | Turborepo | Monorepo build orchestration |
 | **Server** | Express | HTTP server with middleware |
 | **Agent Framework** | LangGraph | State graph orchestration |
-| **LLM Provider** | Google Gemini | Intent classification, planning, generation |
+| **LLM Provider** | OpenAI (gpt-5-mini / gpt-5) | gpt-5-mini for general tasks, gpt-5 for complex planning |
 | **Database** | PostgreSQL | Persistent storage |
 | **ORM** | Prisma | Type-safe database access |
 | **CLI Framework** | Ink (React) | Terminal UI rendering |
@@ -579,7 +581,7 @@ export const MedicineStateAnnotation = Annotation.Root({
 
 4. **Session Continuity**: Users interact within a session context. Guest sessions expire after 24 hours.
 
-5. **LLM Availability**: The system assumes OpenAI (gpt-5-mini) is available. Errors are handled gracefully with fallback responses.
+5. **LLM Availability**: The system uses a dual-model setup: **gpt-5-mini** for general tasks (execution, classification) and **gpt-5** for complex planning operations. Errors are handled gracefully with fallback responses.
 
 6. **Tool Rate Limits**: External APIs (Mapbox, Firecrawl) have rate limits. The system includes basic retry logic.
 ## Trade-offs
@@ -683,8 +685,8 @@ toolRegistry.registerTool(new AppointmentBookingTool());
 |--------|---------|-------------------|
 | **Graph Instances** | In-memory with TTL cleanup | Redis for distributed caching |
 | **Database** | Single PostgreSQL | Read replicas, connection pooling |
-| **LLM Calls** | Sequential | Batch requests, queue-based processing |
-| **Tool Execution** | Sequential | Parallel where independent |
+| **LLM Calls** | Dual-model (gpt-5-mini + gpt-5 for planning) | Batch requests, queue-based processing |
+| **Tool Execution** | Parallel for web_search (up to 3 concurrent) | Fully parallel where independent |
 | **Session State** | Memory + DB | Redis cluster |
 
 ### Potential Future Tasks
@@ -702,7 +704,7 @@ The architecture readily supports:
 
 - [Bun](https://bun.sh/) v1.0+
 - PostgreSQL 14+
-- API Keys: Google Gemini, Mapbox, Firecrawl
+- API Keys: OpenAI, Mapbox, Firecrawl
 
 ### Installation
 
@@ -1075,11 +1077,13 @@ Returns Server-Sent Events with progress updates.
 
 **Benefit:** Strong UX signal; makes agent reasoning visible, not magical.
 
-### 3.5 Parallel Tool Execution
+### 3.5 Extend Parallel Tool Execution
 
-**Improvement:** Execute independent tools concurrently (e.g., multiple pharmacies).
+**Current State:** Parallel execution implemented for `web_search` tool (up to 3 concurrent searches).
 
-**Benefit:** Faster execution; more realistic real-world behavior.
+**Improvement:** Extend parallel execution to other independent tools (e.g., geocoding, call simulation).
+
+**Benefit:** Faster execution across all tool types; more realistic real-world behavior.
 
 ### 3.6 Strict Completion & Validation Contracts
 
