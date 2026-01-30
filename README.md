@@ -1,6 +1,9 @@
 # Pokus - AI Agent System for Real-World Task Completion
 
 A multi-agent system designed to take user intent and drive it to **clear completion** using agent-based reasoning, supporting medicine finding and travel planning tasks.
+
+**[Watch demo video](https://github.com/lokeshkhabiya/pokus-assignment-draft/issues/1#issue-3876367789)**
+
 ## Table of Contents
 
 - [Overview](#overview)
@@ -40,13 +43,209 @@ The system implements a **state graph architecture** using LangGraph, enabling c
 
 ### High-Level Architecture
 
-![High-Level Architecture](architectures/high-level-architecture.png)
+```mermaid
+graph TB
+    subgraph "Frontend Layer - Next.js"
+        UI[Next.js App Router]
+        Pages[Pages & Routes]
+        Components[React Components]
+        StateManagement[Zustand/Redux State]
+        WebSocket[WebSocket Client]
+        
+        subgraph "UI Components"
+            ChatInterface[Chat Interface]
+            ProgressIndicator[Progress Tracker]
+            ResultsView[Results Display]
+            ClarificationForm[Clarification Forms]
+        end
+    end
+
+    subgraph "API Layer - Next.js API Routes"
+        APIRoutes["API Routes"]
+        ChatAPI["/api/chat"]
+        TaskAPI["/api/tasks"]
+        StatusAPI["/api/status"]
+        WebSocketServer[WebSocket Server]
+    end
+
+    subgraph "Backend Layer - Bun/Node.js + TypeScript"
+        Server[Express/Fastify Server]
+        
+        subgraph "Orchestration Layer"
+            Router[Task Router]
+            IntentClassifier[Intent Classifier<br/>LangChain]
+            SessionManager[Session Manager]
+            QueueManager[Queue Manager<br/>BullMQ]
+        end
+        
+        subgraph "Agent Layer - LangGraph"
+            AgentGraph[LangGraph StateGraph]
+            
+            subgraph "Agent Nodes"
+                MedicineNode[Medicine Finder Node]
+                TravelNode[Travel Planner Node]
+                ClarifyNode[Clarification Node]
+                PlanNode[Planning Node]
+                ExecuteNode[Execution Node]
+                ValidateNode[Validation Node]
+            end
+        end
+        
+        subgraph "Tool Layer - LangChain Tools"
+            ToolExecutor[Tool Executor]
+            WebSearchTool[Web Search Tool<br/>Tavily]
+            GeoTool[Geolocation Tool]
+            SimulatorTool[Simulator Tool]
+            DBTool[Database Tool]
+        end
+    end
+
+    subgraph "Data Layer"
+        PostgreSQL[(PostgreSQL)]
+        Redis[(Redis Cache)]
+        
+        subgraph "Database Schema"
+            Sessions[Sessions Table]
+            Conversations[Conversations Table]
+            Tasks[Tasks Table]
+            Results[Results Table]
+            UserPrefs[User Preferences]
+        end
+    end
+
+    subgraph "External Services"
+        AnthropicAPI[Anthropic API<br/>Claude]
+        TavilyAPI[Tavily Search API]
+        MapsAPI[Maps/Geocoding API]
+    end
+
+    UI --> Pages
+    Pages --> Components
+    Components --> ChatInterface
+    Components --> ProgressIndicator
+    Components --> ResultsView
+    Components --> ClarificationForm
+    
+    UI --> StateManagement
+    UI --> WebSocket
+    
+    WebSocket <--> WebSocketServer
+    
+    Pages --> APIRoutes
+    APIRoutes --> ChatAPI
+    APIRoutes --> TaskAPI
+    APIRoutes --> StatusAPI
+    
+    ChatAPI --> Server
+    TaskAPI --> Server
+    StatusAPI --> Server
+    
+    Server --> Router
+    Router --> IntentClassifier
+    Router --> SessionManager
+    Router --> QueueManager
+    
+    Router --> AgentGraph
+    
+    AgentGraph --> MedicineNode
+    AgentGraph --> TravelNode
+    AgentGraph --> ClarifyNode
+    AgentGraph --> PlanNode
+    AgentGraph --> ExecuteNode
+    AgentGraph --> ValidateNode
+    
+    MedicineNode --> ToolExecutor
+    TravelNode --> ToolExecutor
+    ExecuteNode --> ToolExecutor
+    
+    ToolExecutor --> WebSearchTool
+    ToolExecutor --> GeoTool
+    ToolExecutor --> SimulatorTool
+    ToolExecutor --> DBTool
+    
+    SessionManager --> PostgreSQL
+    SessionManager --> Redis
+    
+    PostgreSQL --> Sessions
+    PostgreSQL --> Conversations
+    PostgreSQL --> Tasks
+    PostgreSQL --> Results
+    PostgreSQL --> UserPrefs
+    
+    IntentClassifier --> AnthropicAPI
+    ClarifyNode --> AnthropicAPI
+    PlanNode --> AnthropicAPI
+    
+    WebSearchTool --> TavilyAPI
+    GeoTool --> MapsAPI
+    
+    style UI fill:#61dafb
+    style Server fill:#68a063
+    style AgentGraph fill:#ff6b6b
+    style PostgreSQL fill:#336791
+    style AnthropicAPI fill:#cc99ff
+```
 
 ### Multi-Agent Architecture
 
 The system uses a **specialized agent pattern** where each task type has its own state graph:
 
-![LangGraph State Graph Architecture](architectures/langraph-state-architecture.png)
+```mermaid
+graph TB
+    Start([Start]) --> ClassifyIntent{Classify Intent}
+    
+    ClassifyIntent -->|Medicine| MedicineGraph[Medicine Finder Graph]
+    ClassifyIntent -->|Travel| TravelGraph[Travel Planner Graph]
+    ClassifyIntent -->|Unknown| ErrorNode[Error Handler]
+    
+    subgraph "Medicine Finder State Graph"
+        MedicineGraph --> MedCheck{Has Sufficient Info?}
+        
+        MedCheck -->|No| MedClarify[Clarification Node]
+        MedClarify --> MedGather[Gather Info Node]
+        MedGather --> MedCheck
+        
+        MedCheck -->|Yes| MedPlan[Planning Node]
+        MedPlan --> MedExecute[Execution Node]
+        
+        MedExecute --> MedSearchPharm[Search Pharmacies]
+        MedSearchPharm --> MedCheckAvail[Check Availability]
+        MedCheckAvail --> MedSimCall[Simulate Calls]
+        MedSimCall --> MedFormat[Format Results]
+        
+        MedFormat --> MedValidate[Validation Node]
+        MedValidate --> MedEnd([Complete])
+    end
+    
+    subgraph "Travel Planner State Graph"
+        TravelGraph --> TravelCheck{Has Sufficient Info?}
+        
+        TravelCheck -->|No| TravelClarify[Clarification Node]
+        TravelClarify --> TravelGather[Gather Info Node]
+        TravelGather --> TravelCheck
+        
+        TravelCheck -->|Yes| TravelPlan[Planning Node]
+        TravelPlan --> TravelExecute[Execution Node]
+        
+        TravelExecute --> TravelResearch[Research Destination]
+        TravelResearch --> TravelActivities[Find Activities]
+        TravelActivities --> TravelItinerary[Create Itinerary]
+        
+        TravelItinerary --> TravelRefine{User Refinement?}
+        TravelRefine -->|Yes| TravelAdjust[Adjust Itinerary]
+        TravelAdjust --> TravelItinerary
+        
+        TravelRefine -->|No| TravelValidate[Validation Node]
+        TravelValidate --> TravelEnd([Complete])
+    end
+    
+    ErrorNode --> ErrorEnd([Return Error])
+    
+    style MedicineGraph fill:#e3f2fd
+    style TravelGraph fill:#fff3e0
+    style MedEnd fill:#c8e6c9
+    style TravelEnd fill:#c8e6c9
+```
 
 **Each agent is responsible for:**
 
@@ -589,12 +788,202 @@ pokus/
 
 ### Database Schema (ERD)
 
-![Database Schema (ERD)](architectures/db.png)
+```mermaid
+erDiagram
+    USERS ||--o{ SESSIONS : has
+    USERS ||--o{ USER_PREFERENCES : has
+    SESSIONS ||--o{ CONVERSATIONS : contains
+    SESSIONS ||--o{ TASKS : tracks
+    TASKS ||--o{ TASK_RESULTS : produces
+    TASKS ||--o{ TASK_STEPS : contains
+    CONVERSATIONS ||--o{ MESSAGES : contains
+    
+    USERS {
+        uuid id PK
+        string email UK
+        string name
+        jsonb metadata
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    SESSIONS {
+        uuid id PK
+        uuid user_id FK
+        string session_type
+        string status
+        jsonb context
+        timestamp started_at
+        timestamp ended_at
+        timestamp created_at
+    }
+    
+    CONVERSATIONS {
+        uuid id PK
+        uuid session_id FK
+        string conversation_type
+        jsonb metadata
+        timestamp created_at
+    }
+    
+    MESSAGES {
+        uuid id PK
+        uuid conversation_id FK
+        string role
+        text content
+        jsonb metadata
+        int sequence_number
+        timestamp created_at
+    }
+    
+    TASKS {
+        uuid id PK
+        uuid session_id FK
+        string task_type
+        string status
+        string phase
+        jsonb gathered_info
+        jsonb execution_plan
+        float progress
+        timestamp created_at
+        timestamp updated_at
+        timestamp completed_at
+    }
+    
+    TASK_STEPS {
+        uuid id PK
+        uuid task_id FK
+        string step_name
+        string status
+        jsonb input_data
+        jsonb output_data
+        int sequence_number
+        timestamp started_at
+        timestamp completed_at
+    }
+    
+    TASK_RESULTS {
+        uuid id PK
+        uuid task_id FK
+        string result_type
+        jsonb data
+        text formatted_result
+        timestamp created_at
+    }
+    
+    USER_PREFERENCES {
+        uuid id PK
+        uuid user_id FK
+        string preference_key
+        jsonb preference_value
+        timestamp created_at
+        timestamp updated_at
+    }
+```
 ## API Reference
 
 ### API Flow Sequence Diagram
 
-![API Flow Sequence Diagram](architectures/api-flow.png)
+```mermaid
+sequenceDiagram
+    participant Client as Next.js Client
+    participant API as API Route
+    participant Queue as BullMQ Queue
+    participant Router as Task Router
+    participant Graph as LangGraph
+    participant Tools as LangChain Tools
+    participant DB as PostgreSQL
+    participant Redis as Redis Cache
+    participant LLM as Claude API
+    participant WS as WebSocket
+
+    Client->>API: POST /api/chat<br/>{message, sessionId}
+    
+    API->>DB: Get/Create Session
+    DB-->>API: Session data
+    
+    API->>DB: Save user message
+    DB-->>API: Message saved
+    
+    API->>Queue: Enqueue task
+    Queue-->>API: Task queued
+    
+    API-->>Client: 202 Accepted<br/>{taskId}
+    
+    Note over Queue,Router: Async Processing
+    
+    Queue->>Router: Process task
+    
+    Router->>Redis: Get session context
+    Redis-->>Router: Context data
+    
+    Router->>LLM: Classify intent
+    LLM-->>Router: Intent: MEDICINE_FINDER
+    
+    Router->>Graph: Initialize Medicine Graph
+    
+    rect rgb(200, 220, 240)
+        Note over Graph,Tools: State Graph Execution
+        
+        Graph->>Graph: Check has_sufficient_info?
+        Graph-->>Graph: Missing: location, quantity
+        
+        Graph->>LLM: Generate questions
+        LLM-->>Graph: Clarifying questions
+        
+        Graph->>DB: Save state
+        DB-->>Graph: Saved
+        
+        Graph->>WS: Send progress update
+        WS-->>Client: Show clarification questions
+    end
+    
+    Client->>API: POST /api/chat<br/>{answers}
+    
+    API->>Queue: Enqueue continuation
+    Queue->>Router: Process continuation
+    
+    Router->>DB: Get task state
+    DB-->>Router: Current state
+    
+    Router->>Graph: Resume with answers
+    
+    rect rgb(220, 240, 220)
+        Note over Graph,Tools: Execution Phase
+        
+        Graph->>Graph: Check has_sufficient_info?
+        Graph-->>Graph: Sufficient: true
+        
+        Graph->>LLM: Create plan
+        LLM-->>Graph: Execution plan
+        
+        Graph->>Tools: Execute WebSearchTool
+        Tools-->>Graph: Pharmacy results
+        
+        Graph->>WS: Update progress: "Found 5 pharmacies"
+        WS-->>Client: Progress update
+        
+        Graph->>Tools: Execute CallSimulator
+        Tools-->>Graph: Availability data
+        
+        Graph->>WS: Update progress: "Checking availability"
+        WS-->>Client: Progress update
+        
+        Graph->>LLM: Format results
+        LLM-->>Graph: Formatted response
+        
+        Graph->>DB: Save results
+        DB-->>Graph: Saved
+    end
+    
+    Graph->>WS: Task complete
+    WS-->>Client: Final results
+    
+    Client->>API: GET /api/tasks/{taskId}
+    API->>DB: Get task results
+    DB-->>API: Results data
+    API-->>Client: 200 OK<br/>{results}
+```
 
 ### Chat Endpoint
 
