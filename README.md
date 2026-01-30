@@ -1,9 +1,6 @@
 # Pokus - AI Agent System for Real-World Task Completion
 
 A multi-agent system designed to take user intent and drive it to **clear completion** using agent-based reasoning, supporting medicine finding and travel planning tasks.
-
----
-
 ## Table of Contents
 
 - [Overview](#overview)
@@ -26,9 +23,6 @@ A multi-agent system designed to take user intent and drive it to **clear comple
 - [API Reference](#api-reference)
 - [Future Improvements](#future-improvements)
 - [Design vs Implementation](#design-vs-implementation)
-
----
-
 ## Overview
 
 Pokus is an agentic AI system that goes beyond simple Q&A to **complete real-world tasks**. Unlike traditional AI assistants that stop at suggestions, Pokus:
@@ -42,9 +36,6 @@ Pokus is an agentic AI system that goes beyond simple Q&A to **complete real-wor
 The system implements a **state graph architecture** using LangGraph, enabling complex multi-step workflows with checkpointing, error recovery, and iterative refinement.
 
 **Execution model:** All agent execution is decoupled from HTTP request lifecycles. The API layer is responsible only for intent intake, state retrieval, and progress streaming. Agent graphs are executed asynchronously and can be resumed independently of client connectivity.
-
----
-
 ## Architecture
 
 ### High-Level Architecture
@@ -98,9 +89,6 @@ Both agents follow a standardized phase-based execution model:
 3. **Execution** - Execute steps using registered tools
 4. **Validation** - Verify results and present to user for confirmation
 5. **Complete** - Task finished successfully
-
----
-
 ## Architectural Guarantees & Execution Model
 
 Here’s what makes Pokus more than just a demo—these are the key things I’ve built in to make the agent system reliable and production-ready. I’m writing them out so anyone evaluating the project knows what to expect.
@@ -124,9 +112,6 @@ Failures at any node are isolated and retried where safe. Since state is checkpo
 ### 5. Worker / Queue Model (Design Intent)
 
 Even if Redis and queues are not implemented yet, the **design intent** is documented: the architecture is designed for background workers and queue-based execution (e.g., Redis/BullMQ), enabling horizontal scaling and reliable task orchestration in future iterations.
-
----
-
 ## Supported Tasks
 
 ### 1. Medicine Finder
@@ -198,9 +183,6 @@ Pharmacy: Absolutely! We're open until 9 PM. You can pick it up anytime.
 ⚠️ This is a SIMULATED transcript for demonstration.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
-
----
-
 ### 2. Travel Planner
 
 > **Example prompt:** "Create an itinerary for Bali"
@@ -254,9 +236,6 @@ Seminyak is ideal for first-time visitors...
 - Carry small bills for temple donations
 ...
 ```
-
----
-
 ## Implementation Status
 
 This section is an **explicit, honest snapshot** of what is built today. Evaluators respect clarity over hype.
@@ -297,9 +276,6 @@ This section is an **explicit, honest snapshot** of what is built today. Evaluat
 | Background worker / queue model | ❌ Not implemented |
 | Distributed execution | ❌ Not enabled |
 | Parallel tool execution | ❌ Not implemented |
-
----
-
 ## Technology Stack
 
 | Layer | Technology | Purpose |
@@ -315,9 +291,6 @@ This section is an **explicit, honest snapshot** of what is built today. Evaluat
 | **CLI Framework** | Ink (React) | Terminal UI rendering |
 | **Geocoding** | Mapbox API | Location and place discovery |
 | **Web Search** | Firecrawl | Web content extraction |
-
----
-
 ## Key Design Decisions
 
 ### 1. State Graph Architecture (LangGraph)
@@ -392,9 +365,6 @@ export const MedicineStateAnnotation = Annotation.Root({
   selectedPharmacy: Annotation<PharmacyResult | null>({ ... }),
 });
 ```
-
----
-
 ## Assumptions
 
 1. **User Location**: Users can provide their location as text (address, area name). The system uses geocoding to convert this to coordinates.
@@ -408,9 +378,6 @@ export const MedicineStateAnnotation = Annotation.Root({
 5. **LLM Availability**: The system assumes OpenAI (gpt-5-mini) is available. Errors are handled gracefully with fallback responses.
 
 6. **Tool Rate Limits**: External APIs (Mapbox, Firecrawl) have rate limits. The system includes basic retry logic.
-
----
-
 ## Trade-offs
 
 ### 1. CLI vs Web UI
@@ -453,9 +420,6 @@ export const MedicineStateAnnotation = Annotation.Root({
 | **Development** | Fast | Requires orchestration |
 
 **Decision:** Monolithic for prototype speed; architecture supports future extraction.
-
----
-
 ## Scalability
 
 ### How to Add New Task Types
@@ -528,9 +492,6 @@ The architecture readily supports:
 - 🚗 **Weekend Trip Planning** - Simplified travel for short trips
 - 🍕 **Food Ordering** - Restaurant discovery, menu exploration, order placement
 - 🏥 **Doctor Appointment** - Find specialists, check availability, book slots
-
----
-
 ## Getting Started
 
 ### Prerequisites
@@ -588,9 +549,6 @@ bun run dev
 bun run dev:server  # Start API server on port 3000
 bun run dev:cli     # Start CLI application
 ```
-
----
-
 ## Project Structure
 
 ```
@@ -632,9 +590,6 @@ pokus/
 ### Database Schema (ERD)
 
 ![Database Schema (ERD)](architectures/db.png)
-
----
-
 ## API Reference
 
 ### API Flow Sequence Diagram
@@ -698,9 +653,6 @@ Content-Type: application/json
 ```
 
 Returns Server-Sent Events with progress updates.
-
----
-
 ## Future Improvements
 
 *(If time was not a constraint — logical next steps, not rewrites.)*
@@ -756,17 +708,11 @@ EXECUTION_MODE = "SIMULATE" | "DRY_RUN" | "LIVE"
 ```
 
 **Benefit:** Safe demo; clear path to real integrations later.
-
----
-
 ## Design vs Implementation
 
 - **Design:** The [Architectural Guarantees](#architectural-guarantees--execution-model) and patterns (API/execution separation, checkpointing, completion contracts, event-driven progress) describe the intended system behavior and evaluator-facing guarantees.
 - **Implementation:** The [Implementation Status](#implementation-status) section states what is built today; [Future Improvements](#future-improvements) are the logical next steps without implying they are done.
 
-
-
----
 
 ## References
 
@@ -774,13 +720,7 @@ EXECUTION_MODE = "SIMULATE" | "DRY_RUN" | "LIVE"
 - [CopilotKit](https://www.copilotkit.ai/) - Generative UI inspiration
 - [Mapbox Geocoding API](https://docs.mapbox.com/api/search/geocoding/)
 - [Firecrawl](https://www.firecrawl.dev/) - Web scraping API
-
----
-
 ## License
 
 MIT
-
----
-
 *Built as a prototype for real-world task completion using agentic AI.*
