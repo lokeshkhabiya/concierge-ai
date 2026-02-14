@@ -1,13 +1,13 @@
-# Pokus - AI Agent System for Real-World Task Completion
+# Concierge-AI - AI Agent System for Real-World Task Completion
 
 ## Demo Video
 
 <a href="https://youtu.be/gUY2Ydz1Bss" target="_blank">
-  <img src="https://img.youtube.com/vi/gUY2Ydz1Bss/maxresdefault.jpg" width="560" alt="Pokus: AI Agent System for Real-World Task Completion">
+  <img src="https://img.youtube.com/vi/gUY2Ydz1Bss/maxresdefault.jpg" width="560" alt="Concierge-AI: AI Agent System for Real-World Task Completion">
 </a>
 
 <a href="https://youtu.be/LgOCWU_k_kA" target="_blank">
-  <img src="https://img.youtube.com/vi/LgOCWU_k_kA/maxresdefault.jpg" width="560" alt="Pokus Demo Video">
+  <img src="https://img.youtube.com/vi/LgOCWU_k_kA/maxresdefault.jpg" width="560" alt="Concierge-AI Demo Video">
 </a>
 
 ---
@@ -37,7 +37,7 @@ A multi-agent system designed to take user intent and drive it to **clear comple
 - [Design vs Implementation](#design-vs-implementation)
 ## Overview
 
-Pokus is an agentic AI system that goes beyond simple Q&A to **complete real-world tasks**. Unlike traditional AI assistants that stop at suggestions, Pokus:
+Concierge-AI is an agentic AI system that goes beyond simple Q&A to **complete real-world tasks**. Unlike traditional AI assistants that stop at suggestions, Concierge-AI:
 
 - **Gathers necessary information** through intelligent clarification
 - **Plans execution steps** based on user requirements
@@ -299,7 +299,7 @@ Both agents follow a standardized phase-based execution model:
 5. **Complete** - Task finished successfully
 ## Architectural Guarantees & Execution Model
 
-Here’s what makes Pokus more than just a demo—these are the key things I’ve built in to make the agent system reliable and production-ready. I’m writing them out so anyone evaluating the project knows what to expect.
+Here’s what makes Concierge-AI more than just a demo—these are the key things I’ve built in to make the agent system reliable and production-ready. I’m writing them out so anyone evaluating the project knows what to expect.
 
 ### 1. API Layer vs Execution Layer
 
@@ -714,8 +714,8 @@ The architecture readily supports:
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/pokus.git
-cd pokus
+git clone https://github.com/your-username/Concierge-AI.git
+cd Concierge-AI
 
 # Install dependencies
 bun install
@@ -729,7 +729,7 @@ cp apps/server/.env.example apps/server/.env
 
 ```env
 # Database
-DATABASE_URL="postgresql://user:password@localhost:5432/pokus"
+DATABASE_URL="postgresql://user:password@localhost:5432/Concierge-AI"
 
 # LLM
 OPENAI_API_KEY="your-openai-api-key"
@@ -762,7 +762,7 @@ bun run dev:cli     # Start CLI application
 ## Project Structure
 
 ```
-pokus/
+Concierge-AI/
 ├── apps/
 │   ├── server/                 # Backend API
 │   │   └── src/
